@@ -2008,7 +2008,7 @@ function Window:_build()
     end)
     
     -- Make draggable
-    local dragConns = Utility.MakeDraggable(self._titleBar, self._mainFrame)
+    local dragConns = Utility.Percent.MakeDraggable(self._titleBar, self._mainFrame)
     for _, c in ipairs(dragConns) do
         table.insert(self._connections, c)
     end
@@ -2362,6 +2362,35 @@ function Window:Destroy()
             break
         end
     end
+end
+
+-- Zgui compatibility API
+function Window:SetTitle(title)
+    self._mainFrame.TitleBar.Title.Text = title
+end
+
+function Window:SetTitleIcon(icon)
+    if self._mainFrame.TitleBar.Icon then
+        self._mainFrame.TitleBar.Icon.Image = icon
+    end
+end
+
+function Window:SetGame(game)
+    if self._mainFrame.TitleBar.Subtitle then
+        self._mainFrame.TitleBar.Subtitle.Text = game
+    end
+end
+
+function Window:SetVersion(version)
+    -- Not directly supported, could modify subtitle format
+end
+
+function Window:SetLogo(logo)
+    self._toggleButton.Image = logo
+end
+
+function Window:Tab(name)
+    return self:CreateTab(name)
 end
 
 -- ============================================================================

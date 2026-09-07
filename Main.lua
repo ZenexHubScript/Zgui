@@ -1,6 +1,6 @@
 -- ============================================================================
 -- ZenexLib — Reusable Roblox UI Library
--- Version 2.0
+-- Version 2.1
 --
 -- A clean, minimal, modern dark UI framework.
 -- Production-quality Roblox UI library with comprehensive component system.
@@ -15,7 +15,7 @@ ZenexLib.__index = ZenexLib
 ZenexLib._windows = {}
 ZenexLib._theme = nil
 ZenexLib._connections = {}
-ZenexLib._version = "2.0.0"
+ZenexLib._version = "2.1.0"
 
 -- ============================================================================
 -- SERVICES
@@ -165,7 +165,10 @@ function Utility.Tween(instance, properties, duration, easingStyle, easingDirect
 end
 
 function Utility.SafeTween(instance, properties, duration, easingStyle, easingDirection)
-    if not instance or not instance.Parent then return nil end
+    if not instance or not instance.Parent then 
+        return nil 
+    end
+    
     duration = duration or Theme.AnimationSpeed
     easingStyle = easingStyle or Theme.AnimationEasing
     easingDirection = easingDirection or Theme.AnimationDirection
@@ -177,9 +180,10 @@ function Utility.SafeTween(instance, properties, duration, easingStyle, easingDi
         return t
     end)
 
-    if success then
+    if success and tween then
         return tween
     end
+    
     -- Fallback: set properties directly
     for prop, value in pairs(properties) do
         pcall(function()
@@ -264,9 +268,14 @@ function Utility.MakeDraggable(topBar, mainFrame, connectionsTracker)
             dragging = true
             dragStart = input.Position
             startPos = mainFrame.Position
-            input.Changed:Connect(function()
+            
+            local releaseConnection
+            releaseConnection = input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
+                    if releaseConnection then
+                        releaseConnection:Disconnect()
+                    end
                 end
             end)
         end
@@ -774,7 +783,7 @@ local function CreateButton(parent, config, configManager)
 
     local self = {
         Instance = holder,
-        _connections: AddList(connections),
+        _connections = {},
         _callback = callback,
         _name = name,
         _description = description
@@ -801,10 +810,18 @@ local function CreateButton(parent, config, configManager)
     end
 
     function self:Destroy()
-       for _, conn in ipairs(self._connections) do
-          conn:Disconnect()
-       end
+        for _, conn in ipairs(self._connections) do
+            if typeof(conn) == "RBXScriptConnection" then
+                conn:Disconnect()
+            end
+        end
+        self._connections = {}
         pcall(function() holder:Destroy() end)
+    end
+
+    -- Add connections to the connection tracker
+    for _, conn in ipairs(connections) do
+        table.insert(self._connections, conn)
     end
 
     return self
@@ -866,42 +883,46 @@ local function CreateToggle(parent, config, configManager)
     end
 
     -- Toggle switch
-    local toggleBg = Utility.Create("Frame", {
-        Name = "ToggleBg",
+    local switchBg = Utility.Create("Frame", {
+        Name = "SwitchBg",
         BackgroundColor3 = value and Theme.ToggleOn or Theme.ToggleOff,
         BorderSizePixel = 0,
-        Position = UDim2.new(0, 12, 0, sliderBarY),
-        Size = UDim2.new(1, -24, 0, 6),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.new(0, 36, 0, 18),
         ZIndex = 2,
         Parent = holder
     })
-    Utility.AddCorner(toggleBg, UDim.new(1, 0))
+    Utility.AddCorner(switchBg, UDim.new(1, 0))
 
-    local sliderFill = Utility.Create("Frame", {
-        Name = "Fill",
-        BackgroundColor3 = Theme.SliderFill,
+    local switchKnob = Utility.Create("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = Theme.TextPrimary,
         BorderSizePixel = 0,
-        Position = UDim2.new(fillPercent, 0, 0.5, 0),
-        Size = UDim2.new(fillPercent, 0, 1, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(value and 1 or 0, value and -9 or 9, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 14),
         ZIndex = 3,
-        Parent = sliderBg
+        Parent = switchBg
     })
-    Utility.AddCorner(sliderFill, UDim.new(1, 0))
+    Utility.AddCorner(switchKnob, UDim.new(1, 0))
 
-   --- Remove unused variables
-   local knob = {}
+    local function updateVisual(newValue, animate)
+        if not switchBg or not switchBg.Parent then return end
 
-        local function updateVisual(newValue, animate)
-            if not toggleBg or not toggleBg.Parent then return end
-
-            if animate ~= false then
-                Utility.SafeTween(toggleBg, {
-                    BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff
-                }, 0.2)
-            else
-                if toggleBg then toggleBg.BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff end
-            end
+        if animate ~= false then
+            Utility.SafeTween(switchBg, {
+                BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff
+            }, 0.2)
+            
+            Utility.SafeTween(switchKnob, {
+                Position = UDim2.new(newValue and 1 or 0, newValue and -9 or 9, 0.5, 0)
+            }, 0.2)
+        else
+            switchBg.BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff
+            switchKnob.Position = UDim2.new(newValue and 1 or 0, newValue and -9 or 9, 0.5, 0)
         end
+    end
 
     local function setValue(newValue, skipCallback)
         if newValue == value and not skipCallback then return end
@@ -957,7 +978,7 @@ local function CreateToggle(parent, config, configManager)
     end
 
     function self:Destroy()
-         if flag and configManager then
+        if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
         pcall(function() holder:Destroy() end)
@@ -1076,16 +1097,29 @@ local function CreateSlider(parent, config, configManager)
     })
     Utility.AddCorner(sliderFill, UDim.new(1, 0))
 
-    -- Remove unused variables
-    local knob = {}
+    local knob = Utility.Create("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = Theme.TextPrimary,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(fillPercent, 0, 0.5, 0),
+        Size = UDim2.new(0, 12, 0, 12),
+        ZIndex = 4,
+        Parent = sliderBg
+    })
+    Utility.AddCorner(knob, UDim.new(1, 0))
 
     local function updateVisual(newValue, animate)
         if not sliderBg or not sliderBg.Parent then return end
 
+        local percent = getPercentFromValue(newValue)
+        
         if animate ~= false then
-          Utility.SafeTween(sliderFill, {Size = UDim2.new(getPercentFromValue(newValue), 0, 1, 0)}, 0.05)
+            Utility.SafeTween(sliderFill, {Size = UDim2.new(percent, 0, 1, 0)}, 0.05)
+            Utility.SafeTween(knob, {Position = UDim2.new(percent, 0, 0.5, 0)}, 0.05)
         else
-            sliderFill.Size = UDim2.new(getPercentFromValue(newValue), 0, 1, 0)
+            sliderFill.Size = UDim2.new(percent, 0, 1, 0)
+            knob.Position = UDim2.new(percent, 0, 0.5, 0)
         end
 
         valueLabel.Text = tostring(newValue) .. suffix
@@ -1141,7 +1175,9 @@ local function CreateSlider(parent, config, configManager)
         if not sliderBg or not sliderBg.Parent then return end
 
         sliding = true
-        local slideConnection = UserInputService.InputChanged:Connect(function(input)
+        updateSlider(UserInputService:GetMouseLocation())
+
+        slideConnection = UserInputService.InputChanged:Connect(function(input)
             if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
                 updateSlider(input)
             end
@@ -1151,18 +1187,23 @@ local function CreateSlider(parent, config, configManager)
     mouseUpConnection = UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             sliding = false
-            pcall(function() slideConnection:Disconnect() end)
-            slideConnection = nil
+            if slideConnection then
+                pcall(function() slideConnection:Disconnect() end)
+                slideConnection = nil
+            end
         end
     end)
 
-   local self = {
+    local self = {
         Instance = holder,
-        _connections: AddList({mouseUpConnection}),
+        _connections = {},
         _callback = callback,
         _flag = flag,
         _configManager = configManager
-   }
+    }
+
+    -- Add connections to the connection tracker
+    table.insert(self._connections, mouseUpConnection)
 
     function self:Get()
         return value
@@ -1174,14 +1215,21 @@ local function CreateSlider(parent, config, configManager)
     end
 
     function self:Destroy()
-       if flag and configManager then
+        for _, conn in ipairs(self._connections) do
+            if typeof(conn) == "RBXScriptConnection" then
+                conn:Disconnect()
+            end
+        end
+        self._connections = {}
+        
+        if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
         pcall(function() holder:Destroy() end)
     end
 
     if flag and configManager then
-       configManager:RegisterFlag(flag, {
+        configManager:RegisterFlag(flag, {
             Type = "Slider",
             Value = value,
             Get = function() return value end,
@@ -1189,7 +1237,7 @@ local function CreateSlider(parent, config, configManager)
         })
     end
 
-   return self
+    return self
 end
 
 -- ============================================================================
@@ -1359,7 +1407,7 @@ local function CreateDropdown(parent, config, configManager)
             table.insert(optionConnections, hovEnter)
 
             local hovLeave = optBtn.MouseLeave:Connect(function()
-                local isSel = selected[opt] or false
+                local isSel = (selected == opt)
                 Utility.SafeTween(optBtn, {
                     BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
                     BackgroundTransparency = isSel and 0.7 or 0
@@ -1374,7 +1422,7 @@ local function CreateDropdown(parent, config, configManager)
                 -- Update all buttons
                 for _, child in ipairs(optionsList:GetChildren()) do
                     if child:IsA("TextButton") then
-                        local isSel = (child.Text == tostring(opt))
+                        local isSel = (child.Name == "Option_" .. tostring(opt))
                         Utility.SafeTween(child, {
                             BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
                             BackgroundTransparency = isSel and 0.7 or 0,
@@ -1437,11 +1485,16 @@ local function CreateDropdown(parent, config, configManager)
 
     local self = {
         Instance = holder,
-        _optionConnections: AddList(optionConnections),
+        _optionConnections = {},
         _callback = callback,
         _flag = flag,
         _configManager = configManager
     }
+
+    -- Add option connections to the connection tracker
+    for _, conn in ipairs(optionConnections) do
+        table.insert(self._optionConnections, conn)
+    end
 
     function self:Get()
         return selected
@@ -1491,9 +1544,13 @@ local function CreateDropdown(parent, config, configManager)
     end
 
     function self:Destroy()
-        for _, conn in ipairs(optionConnections) do
-            conn:Disconnect()
+        for _, conn in ipairs(self._optionConnections) do
+            if typeof(conn) == "RBXScriptConnection" then
+                conn:Disconnect()
+            end
         end
+        self._optionConnections = {}
+        
         if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
@@ -1575,6 +1632,23 @@ local function CreateMultiDropdown(parent, config, configManager)
             ZIndex = 2,
             Parent = holder
         })
+    end
+
+    local function getDisplayText()
+        local selectedCount = 0
+        for _, v in pairs(selected) do
+            if v then selectedCount = selectedCount + 1 end
+        end
+        
+        if selectedCount == 0 then
+            return "None selected"
+        elseif selectedCount == 1 then
+            for k, v in pairs(selected) do
+                if v then return tostring(k) end
+            end
+        else
+            return tostring(selectedCount) .. " selected"
+        end
     end
 
     local selectedLabel = Utility.Create("TextLabel", {
@@ -1719,7 +1793,7 @@ local function CreateMultiDropdown(parent, config, configManager)
 
             table.insert(optionButtons, optBtn)
         end
-    }
+    end
 
     rebuildOptions()
 
@@ -1746,11 +1820,16 @@ local function CreateMultiDropdown(parent, config, configManager)
 
     local self = {
         Instance = holder,
-        _optionConnections: AddList(optionConnections),
+        _optionConnections = {},
         _callback = callback,
         _flag = flag,
         _configManager = configManager
     }
+
+    -- Add option connections to the connection tracker
+    for _, conn in ipairs(optionConnections) do
+        table.insert(self._optionConnections, conn)
+    end
 
     function self:Get()
         local result = {}
@@ -1763,9 +1842,9 @@ local function CreateMultiDropdown(parent, config, configManager)
     function self:Set(val)
         selected = {}
         if type(val) == "table" then
-           for _, v in ipairs(val) do
+            for _, v in ipairs(val) do
                 selected[v] = true
-           end
+            end
         end
         rebuildOptions()
         updateDisplay()
@@ -1773,6 +1852,10 @@ local function CreateMultiDropdown(parent, config, configManager)
         local ok, err = pcall(callback, self:Get())
         if not ok then
             warn("[ZenexLib] MultiDropdown callback error:", err)
+        end
+        
+        if flag and configManager then
+            configManager._flags[flag].Value = self:Get()
         end
     end
 
@@ -1791,10 +1874,7 @@ local function CreateMultiDropdown(parent, config, configManager)
         for i, o in ipairs(options) do
             if o == opt then
                 table.remove(options, i)
-                if selected == opt then
-                    selected = options[1]
-                    selectedLabel.Text = tostring(selected)
-                end
+                selected[opt] = nil
                 break
             end
         end
@@ -1802,9 +1882,13 @@ local function CreateMultiDropdown(parent, config, configManager)
     end
 
     function self:Destroy()
-        for _, conn in ipairs(optionConnections) do
-            conn:Disconnect()
+        for _, conn in ipairs(self._optionConnections) do
+            if typeof(conn) == "RBXScriptConnection" then
+                conn:Disconnect()
+            end
         end
+        self._optionConnections = {}
+        
         if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
@@ -1893,6 +1977,24 @@ local function CreateInput(parent, config, configManager)
     Utility.AddCorner(inputBox, Theme.CornerRadiusSmall)
     Utility.AddPadding(inputBox, 0, 8, 0, 8)
 
+    local function updateValue(newValue, skipCallback)
+        value = tostring(newValue)
+        if not skipCallback then
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[ZenexLib] Input callback error:", err)
+            end
+        end
+
+        if flag and configManager then
+            configManager._flags[flag].Value = value
+        end
+    end
+
+    inputBox.FocusLost:Connect(function(enterPressed)
+        updateValue(inputBox.Text, false)
+    end)
+
     local self = {
         Instance = holder,
         _callback = callback,
@@ -1908,20 +2010,11 @@ local function CreateInput(parent, config, configManager)
         value = tostring(newVal)
         inputBox.Text = value
 
-        if not skipCallback then
-            local ok, err = pcall(callback, value, false)
-            if not ok then
-                warn("[ZenexLib] Input callback error:", err)
-            end
-        end
-
-        if flag and configManager then
-            configManager._flags[flag].Value = value
-        end
+        updateValue(value, skipCallback)
     end
 
     function self:Destroy()
-      if flag and configManager then
+        if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
         pcall(function() holder:Destroy() end)
@@ -2038,11 +2131,6 @@ local function CreateKeybind(parent, config, configManager)
                 if flag and configManager then
                     configManager._flags[flag].Value = currentKey
                 end
-            elseif typeof(currentKey) == "EnumItem" and input.UserInputType == currentKey then
-                local ok, err = pcall(callback, currentKey)
-                if not ok then
-                    warn("[ZenexLib] Keybind callback error:", err)
-                end
             end
         else
             if not gameProcessed or not ignoreGameProcessed then
@@ -2058,7 +2146,7 @@ local function CreateKeybind(parent, config, configManager)
 
     local self = {
         Instance = holder,
-        _inputConnection: AddList({inputConn}),
+        _inputConnection = inputConn,
         _callback = callback,
         _changedCallback = changedCallback,
         _flag = flag,
@@ -2074,10 +2162,10 @@ local function CreateKeybind(parent, config, configManager)
         keyButton.Text = typeof(newKey) == "EnumItem" and newKey.Name or tostring(newKey)
 
         if not skipCallback then
-             local ok, err = pcall(changedCallback, currentKey)
-                if not ok then
-                    warn("[ZenexLib] Keybind changed callback error:", err)
-                end
+            local ok, err = pcall(changedCallback, currentKey)
+            if not ok then
+                warn("[ZenexLib] Keybind changed callback error:", err)
+            end
         end
 
         if flag and configManager then
@@ -2086,7 +2174,11 @@ local function CreateKeybind(parent, config, configManager)
     end
 
     function self:Destroy()
-       if flag and configManager then
+        if self._inputConnection then
+            self._inputConnection:Disconnect()
+        end
+        
+        if flag and configManager then
             configManager:UnregisterFlag(flag)
         end
         pcall(function() holder:Destroy() end)
@@ -2815,6 +2907,68 @@ function Window:_show()
     self:_restore()
 end
 
+function Window:_selectTab(tab)
+    if self._destroyed or not tab or tab == self._activeTab then return end
+
+    -- Deselect current tab
+    if self._activeTab and self._activeTab._tabButton then
+        local btn = self._activeTab._tabButton
+        Utility.SafeTween(btn, {
+            BackgroundColor3 = Theme.TabInactive,
+            BackgroundTransparency = 0.5
+        }, 0.15)
+        
+        local indicator = btn:FindFirstChild("Indicator")
+        if indicator then
+            Utility.SafeTween(indicator, {BackgroundTransparency = 1}, 0.15)
+        end
+        
+        local label = btn:FindFirstChild("Label")
+        if label then
+            Utility.SafeTween(label, {TextColor3 = Theme.TextSecondary}, 0.15)
+        end
+        
+        local icon = btn:FindFirstChild("Icon")
+        if icon then
+            Utility.SafeTween(icon, {ImageColor3 = Theme.TextSecondary}, 0.15)
+        end
+        
+        if self._activeTab._container then
+            self._activeTab._container.Visible = false
+        end
+    end
+
+    -- Select new tab
+    self._activeTab = tab
+    
+    if tab._tabButton then
+        local btn = tab._tabButton
+        Utility.SafeTween(btn, {
+            BackgroundColor3 = Theme.TabActive,
+            BackgroundTransparency = 0
+        }, 0.15)
+        
+        local indicator = btn:FindFirstChild("Indicator")
+        if indicator then
+            Utility.SafeTween(indicator, {BackgroundTransparency = 0}, 0.15)
+        end
+        
+        local label = btn:FindFirstChild("Label")
+        if label then
+            Utility.SafeTween(label, {TextColor3 = Theme.TextPrimary}, 0.15)
+        end
+        
+        local icon = btn:FindFirstChild("Icon")
+        if icon then
+            Utility.SafeTween(icon, {ImageColor3 = Theme.TextPrimary}, 0.15)
+        end
+    end
+    
+    if tab._container then
+        tab._container.Visible = true
+    end
+end
+
 function Window:CreateTab(config)
     if self._destroyed then return nil end
 
@@ -3105,3 +3259,5 @@ end
 function ZenexLib:Version()
     return self._version
 end
+
+return ZenexLib

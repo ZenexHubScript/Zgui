@@ -1,9 +1,6 @@
 -- ============================================================================
 -- ZenexLib — Reusable Roblox UI Library
--- Version 2.1
---
--- A clean, minimal, modern dark UI framework.
--- Production-quality Roblox UI library with comprehensive component system.
+-- Version 2.2
 -- ============================================================================
 
 -- ============================================================================
@@ -15,7 +12,7 @@ ZenexLib.__index = ZenexLib
 ZenexLib._windows = {}
 ZenexLib._theme = nil
 ZenexLib._connections = {}
-ZenexLib._version = "2.1.0"
+ZenexLib._version = "2.2.0"
 
 -- ============================================================================
 -- SERVICES
@@ -117,7 +114,7 @@ end
 
 function ConnectionTracker:DisconnectAll()
     for _, conn in ipairs(self._connections) do
-        if typeof(conn) == "RBXScriptConnection" then
+        if typeof(conn) == "RBXScriptConnection" and conn.Connected then
             conn:Disconnect()
         end
     end
@@ -1078,7 +1075,7 @@ local function CreateSlider(parent, config, configManager)
         ZIndex = 2,
         Parent = holder
     })
-    Utility.AddCorner(sliderBg, UDim.new(1, 0))
+    Utility.AddCorner(sliderBg, Theme.CornerRadius)
 
     local function getPercentFromValue(val)
         if max == min then return 0 end
@@ -1095,7 +1092,7 @@ local function CreateSlider(parent, config, configManager)
         ZIndex = 3,
         Parent = sliderBg
     })
-    Utility.AddCorner(sliderFill, UDim.new(1, 0))
+    Utility.AddCorner(sliderFill, Theme.CornerRadius)
 
     local knob = Utility.Create("Frame", {
         Name = "Knob",
@@ -2079,7 +2076,6 @@ local function CreateKeybind(parent, config, configManager)
             TextXAlignment = Enum.TextXAlignment.Left,
             TextWrapped = true,
             Parent = holder
-        })
     end
 
     local keyButton = Utility.Create("TextButton", {
@@ -2212,7 +2208,7 @@ local function CreateLabel(parent, config)
         Size = UDim2.new(1, 0, 0, 20),
         Font = Theme.FontLight,
         Text = text,
-        TextColor3 = color,
+        TextColor3 = Color3.fromRGB(240, 240, 245),
         TextSize = fontSize,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextWrapped = true,
@@ -2501,12 +2497,6 @@ function Tab:AddParagraph(config)
     return element
 end
 
-function Tab:AddColorPicker(config)
-    -- Placeholder for future implementation
-    warn("[ZenexLib] ColorPicker not yet implemented, using Label instead")
-    return self:AddLabel({ Text = config.Name or "Color Picker" })
-end
-
 function Tab:Destroy()
     for _, element in ipairs(self._elements) do
         if element.Destroy then
@@ -2759,7 +2749,7 @@ function Window:_build()
         BorderSizePixel = 0,
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, 0, 0, 0),
-        Size = UDim2.new(0, 1, 1, 0),
+        Size = UDim2.new(1, 0, 0, 1),
         ZIndex = 3,
         Parent = self._tabBarFrame
     })
@@ -2883,7 +2873,7 @@ function Window:_hide()
     self._isHidden = true
 
     Utility.SafeTween(self._mainFrame, {
-        Size = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(0, 0, 0, 0)
     }, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In)
 
     task.wait(0.3)

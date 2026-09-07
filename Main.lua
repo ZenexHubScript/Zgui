@@ -1,15 +1,9 @@
 --[[
     ZenexLib — Reusable Roblox UI Library
+    Version 2.0
     
     A clean, minimal, modern dark UI framework.
-    Inspired by Orion/Rayfield/Linoria/Kavo concepts with original implementation.
-    
-    Usage:
-        local ZenexLib = loadstring(...)() -- or require(...)
-        local Window = ZenexLib:CreateWindow({ Name = "My Hub", Subtitle = "Game - 1.0.0" })
-        local Tab = Window:CreateTab({ Name = "Main", Icon = "" })
-        Tab:AddButton({ Name = "Click Me", Callback = function() print("Clicked") end })
-        -- etc.
+    Production-quality Roblox UI library with comprehensive component system.
 ]]
 
 -- ============================================================================
@@ -21,6 +15,7 @@ ZenexLib.__index = ZenexLib
 ZenexLib._windows = {}
 ZenexLib._theme = nil
 ZenexLib._connections = {}
+ZenexLib._version = "2.0.0"
 
 -- ============================================================================
 -- SERVICES
@@ -64,6 +59,7 @@ local Theme = {
     Success = Color3.fromRGB(80, 200, 120),
     Warning = Color3.fromRGB(240, 180, 50),
     Error = Color3.fromRGB(220, 70, 70),
+    ScrollBar = Color3.fromRGB(90, 90, 235),
     
     CornerRadius = UDim.new(0, 8),
     CornerRadiusSmall = UDim.new(0, 5),
@@ -91,9 +87,43 @@ local Theme = {
     WindowHeight = 380,
     TabBarWidth = 130,
     TitleBarHeight = 38,
+    MaxDropdownHeight = 150,
 }
 
 ZenexLib._theme = Theme
+
+-- ============================================================================
+-- CONNECTION TRACKER
+-- ============================================================================
+
+local ConnectionTracker = {}
+ConnectionTracker.__index = ConnectionTracker
+
+function ConnectionTracker.new()
+    return setmetatable({ _connections = {} }, ConnectionTracker)
+end
+
+function ConnectionTracker:Add(connection)
+    if typeof(connection) == "RBXScriptConnection" then
+        table.insert(self._connections, connection)
+    end
+    return connection
+end
+
+function ConnectionTracker:AddList(connections)
+    for _, conn in ipairs(connections) do
+        self:Add(conn)
+    end
+end
+
+function ConnectionTracker:DisconnectAll()
+    for _, conn in ipairs(self._connections) do
+        if typeof(conn) == "RBXScriptConnection" then
+            conn:Disconnect()
+        end
+    end
+    self._connections = {}
+end
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
@@ -124,16 +154,40 @@ function Utility.Create(className, properties, children)
 end
 
 function Utility.Tween(instance, properties, duration, easingStyle, easingDirection)
+    if not instance or not instance.Parent then return nil end
     duration = duration or Theme.AnimationSpeed
     easingStyle = easingStyle or Theme.AnimationEasing
     easingDirection = easingDirection or Theme.AnimationDirection
-    local tween = TweenService:Create(
-        instance,
-        TweenInfo.new(duration, easingStyle, easingDirection),
-        properties
-    )
+    
+    local tweenInfo = TweenInfo.new(duration, easingStyle, easingDirection)
+    local tween = TweenService:Create(instance, tweenInfo, properties)
     tween:Play()
     return tween
+end
+
+function Utility.SafeTween(instance, properties, duration, easingStyle, easingDirection)
+    if not instance or not instance.Parent then return nil end
+    duration = duration or Theme.AnimationSpeed
+    easingStyle = easingStyle or Theme.AnimationEasing
+    easingDirection = easingDirection or Theme.AnimationDirection
+    
+    local success, tween = pcall(function()
+        local tweenInfo = TweenInfo.new(duration, easingStyle, easingDirection)
+        local t = TweenService:Create(instance, tweenInfo, properties)
+        t:Play()
+        return t
+    end)
+    
+    if success then
+        return tween
+    end
+    -- Fallback: set properties directly
+    for prop, value in pairs(properties) do
+        pcall(function()
+            instance[prop] = value
+        end)
+    end
+    return nil
 end
 
 function Utility.AddCorner(parent, radius)
@@ -163,10 +217,10 @@ function Utility.AddPadding(parent, top, right, bottom, left)
     })
 end
 
-function Utility.AddListLayout(parent, padding, hAlign, sortOrder)
+function Utility.AddListLayout(parent, padding, horizontalAlignment, sortOrder)
     return Utility.Create("UIListLayout", {
         Padding = UDim.new(0, padding or Theme.ElementPadding),
-        HorizontalAlignment = hAlign or Enum.HorizontalAlignment.Center,
+        HorizontalAlignment = horizontalAlignment or Enum.HorizontalAlignment.Center,
         SortOrder = sortOrder or Enum.SortOrder.LayoutOrder,
         Parent = parent
     })
@@ -199,14 +253,13 @@ function Utility.AddShadow(parent)
     return holder
 end
 
-function Utility.MakeDraggable(topBar, mainFrame)
+function Utility.MakeDraggable(topBar, mainFrame, connectionsTracker)
     local dragging = false
     local dragInput = nil
     local dragStart = nil
     local startPos = nil
-    local connections = {}
 
-    table.insert(connections, topBar.InputBegan:Connect(function(input)
+    local conn1 = topBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 
         or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
@@ -218,16 +271,16 @@ function Utility.MakeDraggable(topBar, mainFrame)
                 end
             end)
         end
-    end))
+    end)
 
-    table.insert(connections, topBar.InputChanged:Connect(function(input)
+    local conn2 = topBar.InputChanged:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement 
         or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
-    end))
+    end)
 
-    table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+    local conn3 = UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
             mainFrame.Position = UDim2.new(
@@ -235,12 +288,20 @@ function Utility.MakeDraggable(topBar, mainFrame)
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
         end
-    end))
+    end)
 
-    return connections
+    if connectionsTracker then
+        connectionsTracker:AddList({conn1, conn2, conn3})
+    end
+    return {conn1, conn2, conn3}
 end
 
 function Utility.Ripple(button)
+    if not button or not button.Parent then return end
+    
+    local maxSize = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
+    if maxSize <= 0 then return end
+    
     local ripple = Utility.Create("Frame", {
         Name = "Ripple",
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -254,32 +315,65 @@ function Utility.Ripple(button)
     })
     Utility.AddCorner(ripple, UDim.new(1, 0))
     
-    local maxSize = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
-    Utility.Tween(ripple, {
+    Utility.SafeTween(ripple, {
         Size = UDim2.new(0, maxSize, 0, maxSize),
         BackgroundTransparency = 1
     }, 0.4)
     
     task.delay(0.4, function()
         if ripple and ripple.Parent then
-            ripple:Destroy()
+            pcall(function() ripple:Destroy() end)
         end
     end)
 end
 
-function Utility.HoverEffect(button, normalColor, hoverColor)
+function Utility.HoverEffect(button, normalColor, hoverColor, connectionsTracker)
     local connections = {}
-    table.insert(connections, button.MouseEnter:Connect(function()
-        Utility.Tween(button, {BackgroundColor3 = hoverColor}, 0.15)
-    end))
-    table.insert(connections, button.MouseLeave:Connect(function()
-        Utility.Tween(button, {BackgroundColor3 = normalColor}, 0.15)
-    end))
+    local conn1 = button.MouseEnter:Connect(function()
+        Utility.SafeTween(button, {BackgroundColor3 = hoverColor}, 0.15)
+    end)
+    table.insert(connections, conn1)
+    
+    local conn2 = button.MouseLeave:Connect(function()
+        Utility.SafeTween(button, {BackgroundColor3 = normalColor}, 0.15)
+    end)
+    table.insert(connections, conn2)
+    
+    if connectionsTracker then
+        connectionsTracker:AddList(connections)
+    end
     return connections
 end
 
 function Utility.GenerateId()
     return HttpService:GenerateGUID(false)
+end
+
+function Utility.Clamp(val, min, max)
+    return math.max(min, math.min(max, val))
+end
+
+function Utility.RoundToIncrement(val, increment, min)
+    return math.floor((val - (min or 0)) / increment + 0.5) * increment + (min or 0)
+end
+
+function Utility.CreateInputBlocker(parent)
+    local blocker = Utility.Create("Frame", {
+        Name = "InputBlocker",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        ZIndex = 9999,
+        Parent = parent
+    })
+    Utility.Create("TextButton", {
+        Name = "Blocker",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        Text = "",
+        ZIndex = 10000,
+        Parent = blocker
+    })
+    return blocker
 end
 
 -- ============================================================================
@@ -292,13 +386,18 @@ ConfigManager.__index = ConfigManager
 function ConfigManager.new(configName)
     local self = setmetatable({}, ConfigManager)
     self._name = configName or "ZenexConfig"
-    self._flags = {} -- { [flagId] = { Value = ..., Type = ..., Set = function, Get = function } }
+    self._flags = {}
     self._saveFolder = "ZenexLib"
+    self._loaded = false
     return self
 end
 
 function ConfigManager:RegisterFlag(id, flagData)
     self._flags[id] = flagData
+end
+
+function ConfigManager:UnregisterFlag(id)
+    self._flags[id] = nil
 end
 
 function ConfigManager:GetFlag(id)
@@ -321,9 +420,15 @@ function ConfigManager:Serialize()
     for id, flag in pairs(self._flags) do
         local val = flag.Value
         if flag.Type == "Keybind" then
-            val = val and val.Name or "Unknown"
+            if typeof(val) == "EnumItem" then
+                val = val.Name
+            else
+                val = "Unknown"
+            end
         elseif flag.Type == "Color" then
-            val = {R = val.R, G = val.G, B = val.B}
+            if typeof(val) == "Color3" then
+                val = {R = val.R, G = val.G, B = val.B}
+            end
         end
         data[id] = {
             Type = flag.Type,
@@ -337,21 +442,33 @@ function ConfigManager:Deserialize(jsonString)
     local success, data = pcall(function()
         return HttpService:JSONDecode(jsonString)
     end)
-    if not success or type(data) ~= "table" then return false end
+    if not success or type(data) ~= "table" then 
+        return false 
+    end
     
+    local count = 0
     for id, entry in pairs(data) do
         if self._flags[id] then
             local value = entry.Value
             if entry.Type == "Keybind" and type(value) == "string" then
-                local ok, enumVal = pcall(function() return Enum.KeyCode[value] end)
-                if ok then value = enumVal end
+                local ok, enumVal = pcall(function() 
+                    return Enum.KeyCode[value] 
+                end)
+                if ok and typeof(enumVal) == "EnumItem" then 
+                    value = enumVal 
+                else
+                    value = Enum.KeyCode.Unknown
+                end
             elseif entry.Type == "Color" and type(value) == "table" then
                 value = Color3.new(value.R or 0, value.G or 0, value.B or 0)
             end
             self:SetFlag(id, value)
+            count = count + 1
         end
     end
-    return true
+    
+    self._loaded = true
+    return count > 0
 end
 
 function ConfigManager:Save()
@@ -387,17 +504,24 @@ end
 -- ============================================================================
 
 local NotificationManager = {}
+NotificationManager.__index = NotificationManager
 NotificationManager._container = nil
 NotificationManager._notifications = {}
 
+function NotificationManager.new()
+    return setmetatable({}, NotificationManager)
+end
+
 function NotificationManager:Init(screenGui)
     if self._container then return end
+    
     self._container = Utility.Create("Frame", {
         Name = "NotificationContainer",
         AnchorPoint = Vector2.new(1, 1),
         BackgroundTransparency = 1,
-        Position = UDim2.new(1, -15, 1, -15),
-        Size = UDim2.new(0, 280, 1, -30),
+        Position = UDim2.new(1, -15, 1, -45),
+        Size = UDim2.new(0, 280, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
         ZIndex = 100,
         Parent = screenGui
     })
@@ -412,12 +536,16 @@ function NotificationManager:Send(options)
     local title = options.Title or "Notification"
     local message = options.Message or ""
     local duration = options.Duration or 4
-    local notifType = options.Type or "Info" -- Info, Success, Warning, Error
+    local notifType = options.Type or "Info"
     
     local accentColor = Theme.AccentColor
-    if notifType == "Success" then accentColor = Theme.Success
-    elseif notifType == "Warning" then accentColor = Theme.Warning
-    elseif notifType == "Error" then accentColor = Theme.Error end
+    if notifType == "Success" then 
+        accentColor = Theme.Success
+    elseif notifType == "Warning" then 
+        accentColor = Theme.Warning
+    elseif notifType == "Error" then 
+        accentColor = Theme.Error
+    end
     
     local notifFrame = Utility.Create("Frame", {
         Name = "Notification",
@@ -444,14 +572,14 @@ function NotificationManager:Send(options)
         Name = "Content",
         BackgroundTransparency = 1,
         Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.new(1, -15, 0, 0),
+        Size = UDim2.new(1, -12, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         Parent = notifFrame
     })
     Utility.AddPadding(contentFrame, 8, 5, 8, 5)
     Utility.AddListLayout(contentFrame, 3, Enum.HorizontalAlignment.Left)
     
-    Utility.Create("TextLabel", {
+    local titleLabel = Utility.Create("TextLabel", {
         Name = "Title",
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 0),
@@ -487,7 +615,7 @@ function NotificationManager:Send(options)
         BackgroundColor3 = accentColor,
         BackgroundTransparency = 0.6,
         BorderSizePixel = 0,
-        Position = UDim2.new(0, 0, 1, -2),
+        Position = UDim2.new(0, 0, 1, 0),
         Size = UDim2.new(1, 0, 0, 2),
         ZIndex = 2,
         Parent = notifFrame
@@ -495,28 +623,60 @@ function NotificationManager:Send(options)
     
     -- Animate in
     notifFrame.BackgroundTransparency = 1
-    Utility.Tween(notifFrame, {BackgroundTransparency = 0}, 0.3)
-    Utility.Tween(progressBar, {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
+    notifFrame.Size = UDim2.new(1, 0, 0, 0)
+    
+    Utility.SafeTween(notifFrame, {BackgroundTransparency = 0}, 0.3)
+    Utility.SafeTween(progressBar, {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
+    
+    -- Dismiss button
+    local dismissBtn = Utility.Create("TextButton", {
+        Name = "Dismiss",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -22, 0, 5),
+        Size = UDim2.new(0, 16, 0, 16),
+        Text = "×",
+        TextColor3 = Theme.TextDim,
+        TextSize = 14,
+        Font = Theme.FontBold,
+        ZIndex = 3,
+        Parent = notifFrame
+    })
+    
+    dismissBtn.MouseButton1Click:Connect(function()
+        if notifFrame and notifFrame.Parent then
+            Utility.SafeTween(notifFrame, {BackgroundTransparency = 1}, 0.2)
+            task.delay(0.25, function()
+                if notifFrame and notifFrame.Parent then
+                    pcall(function() notifFrame:Destroy() end)
+                end
+            end)
+        end
+    end)
     
     task.delay(duration, function()
         if notifFrame and notifFrame.Parent then
-            Utility.Tween(notifFrame, {BackgroundTransparency = 1}, 0.3)
+            Utility.SafeTween(notifFrame, {BackgroundTransparency = 1}, 0.3)
             task.wait(0.35)
             if notifFrame and notifFrame.Parent then
-                notifFrame:Destroy()
+                pcall(function() notifFrame:Destroy() end)
             end
         end
     end)
 end
 
--- ============================================================================
--- COMPONENT BUILDERS
--- ============================================================================
+function NotificationManager:Destroy()
+    if self._container then
+        self._container:Destroy()
+        self._container = nil
+    end
+end
 
-local Components = {}
+-- ============================================================================
+-- COMPONENT BASES
+-- ============================================================================
 
 -- Creates the base element holder that all components sit inside
-function Components.CreateElementBase(parent, name, height)
+local function CreateElementBase(parent, name, height)
     local frame = Utility.Create("Frame", {
         Name = name or "Element",
         BackgroundColor3 = Theme.Element,
@@ -534,16 +694,16 @@ end
 -- BUTTON COMPONENT
 -- ============================================================================
 
-function Components.Button(parent, config, configManager)
+local function CreateButton(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Button"
     local description = config.Description or nil
     local callback = config.Callback or function() end
     
     local totalHeight = description and 48 or Theme.ElementHeight
-    local holder = Components.CreateElementBase(parent, "Button_" .. name, totalHeight)
+    local holder = CreateElementBase(parent, "Button_" .. name, totalHeight)
     
-    local button = Utility.Create("TextButton", {
+    local clickable = Utility.Create("TextButton", {
         Name = "Clickable",
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 1, 0),
@@ -599,39 +759,63 @@ function Components.Button(parent, config, configManager)
     
     local connections = Utility.HoverEffect(holder, Theme.Element, Theme.ElementHover)
     
-    button.MouseButton1Click:Connect(function()
+    clickable.MouseButton1Click:Connect(function()
         Utility.Ripple(holder)
         
         -- Flash effect
-        Utility.Tween(holder, {BackgroundColor3 = Theme.AccentColor}, 0.1)
+        Utility.SafeTween(holder, {BackgroundColor3 = Theme.AccentColor}, 0.1)
         task.wait(0.1)
-        Utility.Tween(holder, {BackgroundColor3 = Theme.Element}, 0.2)
+        Utility.SafeTween(holder, {BackgroundColor3 = Theme.Element}, 0.2)
         
-        pcall(callback)
+        local ok, err = pcall(callback)
+        if not ok then
+            warn("[ZenexLib] Button callback error:", err)
+        end
     end)
     
-    local buttonObj = {
+    local self = {
         Instance = holder,
         _connections = connections,
-        SetName = function(self, newName)
-            holder:FindFirstChild("Label").Text = newName
-        end,
-        Destroy = function(self)
-            for _, conn in ipairs(self._connections) do
-                conn:Disconnect()
-            end
-            holder:Destroy()
-        end
+        _callback = callback,
+        _name = name,
+        _description = description
     }
     
-    return buttonObj
+    function self:SetName(newName)
+        local label = holder:FindFirstChild("Label")
+        if label then
+            label.Text = newName
+            self._name = newName
+        end
+    end
+    
+    function self:SetDescription(newDesc)
+        local desc = holder:FindFirstChild("Description")
+        if desc then
+            desc.Text = newDesc
+            self._description = newDesc
+        end
+    end
+    
+    function self:SetCallback(newCallback)
+        self._callback = newCallback
+    end
+    
+    function self:Destroy()
+        for _, conn in ipairs(self._connections) do
+            conn:Disconnect()
+        end
+        pcall(function() holder:Destroy() end)
+    end
+    
+    return self
 end
 
 -- ============================================================================
 -- TOGGLE COMPONENT
 -- ============================================================================
 
-function Components.Toggle(parent, config, configManager)
+local function CreateToggle(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Toggle"
     local description = config.Description or nil
@@ -641,9 +825,9 @@ function Components.Toggle(parent, config, configManager)
     
     local value = default
     local totalHeight = description and 48 or Theme.ElementHeight
-    local holder = Components.CreateElementBase(parent, "Toggle_" .. name, totalHeight)
+    local holder = CreateElementBase(parent, "Toggle_" .. name, totalHeight)
     
-    local button = Utility.Create("TextButton", {
+    local clickable = Utility.Create("TextButton", {
         Name = "Clickable",
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 1, 0),
@@ -696,9 +880,9 @@ function Components.Toggle(parent, config, configManager)
     
     local toggleKnob = Utility.Create("Frame", {
         Name = "Knob",
-        AnchorPoint = Vector2.new(0, 0.5),
+        AnchorPoint = Vector2.new(0.5, 0.5),
         BackgroundColor3 = Theme.TextPrimary,
-        Position = value and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
+        Position = value and UDim2.new(0.75, 0, 0.5, 0) or UDim2.new(0.25, 0, 0.5, 0),
         Size = UDim2.new(0, 16, 0, 16),
         ZIndex = 4,
         Parent = toggleBg
@@ -706,53 +890,81 @@ function Components.Toggle(parent, config, configManager)
     Utility.AddCorner(toggleKnob, UDim.new(1, 0))
     
     local function updateVisual(newValue, animate)
+        if not toggleBg or not toggleBg.Parent then return end
+        
         if animate ~= false then
-            Utility.Tween(toggleBg, {
+            Utility.SafeTween(toggleBg, {
                 BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff
             }, 0.2)
-            Utility.Tween(toggleKnob, {
-                Position = newValue and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)
+            Utility.SafeTween(toggleKnob, {
+                Position = newValue and UDim2.new(0.75, 0, 0.5, 0) or UDim2.new(0.25, 0, 0.5, 0)
             }, 0.2)
         else
-            toggleBg.BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff
-            toggleKnob.Position = newValue and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)
+            if toggleBg then toggleBg.BackgroundColor3 = newValue and Theme.ToggleOn or Theme.ToggleOff end
+            if toggleKnob then toggleKnob.Position = newValue and UDim2.new(0.75, 0, 0.5, 0) or UDim2.new(0.25, 0, 0.5, 0) end
         end
     end
     
     local function setValue(newValue, skipCallback)
+        if newValue == value and not skipCallback then return end
         value = newValue
         updateVisual(value)
         if not skipCallback then
-            pcall(callback, value)
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[ZenexLib] Toggle callback error:", err)
+            end
+        end
+    end
+    
+    clickable.MouseButton1Click:Connect(function()
+        setValue(not value, false)
+    end)
+    
+    local connections = Utility.HoverEffect(holder, Theme.Element, Theme.ElementHover)
+    
+    local self = {
+        Instance = holder,
+        _connections = connections,
+        _value = value,
+        _callback = callback,
+        _flag = flag,
+        _configManager = configManager
+    }
+    
+    function self:Get()
+        return value
+    end
+    
+    function self:Set(newVal, skipCallback)
+        newVal = newVal and true or false
+        value = newVal
+        updateVisual(value, true)
+        if not skipCallback then
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[ZenexLib] Toggle callback error:", err)
+            end
         end
         if flag and configManager then
             configManager._flags[flag].Value = value
         end
     end
     
-    button.MouseButton1Click:Connect(function()
-        setValue(not value)
-    end)
+    function self:SetName(newName)
+        local label = holder:FindFirstChild("Label")
+        if label then label.Text = newName end
+    end
     
-    local connections = Utility.HoverEffect(holder, Theme.Element, Theme.ElementHover)
-    
-    local toggleObj = {
-        Instance = holder,
-        _connections = connections,
-        Get = function() return value end,
-        Set = function(self, newVal, skipCallback)
-            setValue(newVal, skipCallback)
-        end,
-        SetName = function(self, newName)
-            holder:FindFirstChild("Label").Text = newName
-        end,
-        Destroy = function(self)
-            for _, conn in ipairs(self._connections) do
-                conn:Disconnect()
-            end
-            holder:Destroy()
+    function self:Destroy()
+        for _, conn in ipairs(self._connections) do
+            conn:Disconnect()
         end
-    }
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
     
     -- Register with config
     if flag and configManager then
@@ -761,7 +973,7 @@ function Components.Toggle(parent, config, configManager)
             Value = value,
             Get = function() return value end,
             Set = function(v)
-                setValue(v, false)
+                self:Set(v, true)
             end
         })
     end
@@ -769,14 +981,14 @@ function Components.Toggle(parent, config, configManager)
     -- Set default (skip callback on init)
     updateVisual(value, false)
     
-    return toggleObj
+    return self
 end
 
 -- ============================================================================
 -- SLIDER COMPONENT
 -- ============================================================================
 
-function Components.Slider(parent, config, configManager)
+local function CreateSlider(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Slider"
     local description = config.Description or nil
@@ -787,10 +999,11 @@ function Components.Slider(parent, config, configManager)
     local callback = config.Callback or function() end
     local flag = config.Flag or nil
     local suffix = config.Suffix or ""
+    local precise = config.Precise or false
     
-    local value = math.clamp(default, min, max)
+    local value = Utility.Clamp(default, min, max)
     local totalHeight = description and 62 or 52
-    local holder = Components.CreateElementBase(parent, "Slider_" .. name, totalHeight)
+    local holder = CreateElementBase(parent, "Slider_" .. name, totalHeight)
     
     local yOffset = description and 4 or 4
     
@@ -852,7 +1065,12 @@ function Components.Slider(parent, config, configManager)
     })
     Utility.AddCorner(sliderBg, UDim.new(1, 0))
     
-    local fillPercent = (value - min) / (max - min)
+    local function getPercentFromValue(val)
+        if max == min then return 0 end
+        return (val - min) / (max - min)
+    end
+    
+    local fillPercent = getPercentFromValue(value)
     
     local sliderFill = Utility.Create("Frame", {
         Name = "Fill",
@@ -887,30 +1105,41 @@ function Components.Slider(parent, config, configManager)
     })
     
     local sliding = false
+    local slideConnection = nil
+    local mouseUpConnection = nil
     
-    local function roundToIncrement(val)
-        return math.floor((val - min) / increment + 0.5) * increment + min
+    local function roundValue(val)
+        if precise then
+            return Utility.Clamp(val, min, max)
+        end
+        local rounded = Utility.RoundToIncrement(val, increment, min)
+        return Utility.Clamp(rounded, min, max)
     end
     
     local function updateSlider(input)
+        if not sliderBg or not sliderBg.Parent then return end
+        
         local barAbsPos = sliderBg.AbsolutePosition.X
         local barAbsSize = sliderBg.AbsoluteSize.X
-        local mouseX = input.Position.X
+        if barAbsSize <= 0 then return end
         
-        local percent = math.clamp((mouseX - barAbsPos) / barAbsSize, 0, 1)
+        local mouseX = input.Position.X
+        local percent = Utility.Clamp((mouseX - barAbsPos) / barAbsSize, 0, 1)
         local rawValue = min + (max - min) * percent
-        local newValue = roundToIncrement(rawValue)
-        newValue = math.clamp(newValue, min, max)
+        local newValue = roundValue(rawValue)
         
         if newValue ~= value then
             value = newValue
-            local actualPercent = (value - min) / (max - min)
+            local actualPercent = getPercentFromValue(value)
             
-            Utility.Tween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.05)
-            Utility.Tween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.05)
+            Utility.SafeTween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.05)
+            Utility.SafeTween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.05)
             valueLabel.Text = tostring(value) .. suffix
             
-            pcall(callback, value)
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[ZenexLib] Slider callback error:", err)
+            end
             
             if flag and configManager then
                 configManager._flags[flag].Value = value
@@ -918,21 +1147,32 @@ function Components.Slider(parent, config, configManager)
         end
     end
     
-    local slideConnection = nil
-    
     interactButton.MouseButton1Down:Connect(function(x, y)
+        if not sliderBg or not sliderBg.Parent then return end
+        
         sliding = true
+        
         -- Process the click position immediately
-        local percent = math.clamp((x - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X, 0, 1)
+        local barAbsPos = sliderBg.AbsolutePosition.X
+        local barAbsSize = sliderBg.AbsoluteSize.X
+        if barAbsSize <= 0 then return end
+        
+        local percent = Utility.Clamp((x - barAbsPos) / barAbsSize, 0, 1)
         local rawValue = min + (max - min) * percent
-        local newValue = roundToIncrement(rawValue)
-        newValue = math.clamp(newValue, min, max)
+        local newValue = roundValue(rawValue)
+        
         value = newValue
-        local actualPercent = (value - min) / (max - min)
-        Utility.Tween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.05)
-        Utility.Tween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.05)
+        local actualPercent = getPercentFromValue(value)
+        
+        Utility.SafeTween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.05)
+        Utility.SafeTween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.05)
         valueLabel.Text = tostring(value) .. suffix
-        pcall(callback, value)
+        
+        local ok, err = pcall(callback, value)
+        if not ok then
+            warn("[ZenexLib] Slider callback error:", err)
+        end
+        
         if flag and configManager then
             configManager._flags[flag].Value = value
         end
@@ -944,7 +1184,7 @@ function Components.Slider(parent, config, configManager)
         end)
     end)
     
-    local mouseUpConn = UserInputService.InputEnded:Connect(function(input)
+    mouseUpConnection = UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             sliding = false
             if slideConnection then
@@ -954,32 +1194,51 @@ function Components.Slider(parent, config, configManager)
         end
     end)
     
-    local sliderObj = {
+    local self = {
         Instance = holder,
-        _connections = {mouseUpConn},
-        Get = function() return value end,
-        Set = function(self, newVal, skipCallback)
-            newVal = math.clamp(roundToIncrement(newVal), min, max)
-            value = newVal
-            local actualPercent = (value - min) / (max - min)
-            Utility.Tween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.1)
-            Utility.Tween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.1)
-            valueLabel.Text = tostring(value) .. suffix
-            if not skipCallback then
-                pcall(callback, value)
-            end
-            if flag and configManager then
-                configManager._flags[flag].Value = value
-            end
-        end,
-        Destroy = function(self)
-            for _, conn in ipairs(self._connections) do
-                conn:Disconnect()
-            end
-            if slideConnection then slideConnection:Disconnect() end
-            holder:Destroy()
-        end
+        _mouseUpConnection = mouseUpConnection,
+        _slideConnection = nil,
+        _callback = callback,
+        _flag = flag,
+        _configManager = configManager
     }
+    
+    function self:Get()
+        return value
+    end
+    
+    function self:Set(newVal, skipCallback)
+        newVal = roundValue(newVal)
+        value = newVal
+        local actualPercent = getPercentFromValue(value)
+        Utility.SafeTween(sliderFill, {Size = UDim2.new(actualPercent, 0, 1, 0)}, 0.1)
+        Utility.SafeTween(knob, {Position = UDim2.new(actualPercent, 0, 0.5, 0)}, 0.1)
+        valueLabel.Text = tostring(value) .. suffix
+        
+        if not skipCallback then
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[ZenexLib] Slider callback error:", err)
+            end
+        end
+        
+        if flag and configManager then
+            configManager._flags[flag].Value = value
+        end
+    end
+    
+    function self:Destroy()
+        if mouseUpConnection then
+            mouseUpConnection:Disconnect()
+        end
+        if slideConnection then
+            slideConnection:Disconnect()
+        end
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
     
     if flag and configManager then
         configManager:RegisterFlag(flag, {
@@ -987,46 +1246,355 @@ function Components.Slider(parent, config, configManager)
             Value = value,
             Get = function() return value end,
             Set = function(v)
-                sliderObj:Set(v, false)
+                self:Set(v, true)
             end
         })
     end
     
-    return sliderObj
+    return self
 end
 
 -- ============================================================================
--- DROPDOWN COMPONENT
+-- DROPDOWN COMPONENT (Single)
 -- ============================================================================
 
-function Components.Dropdown(parent, config, configManager)
+local function CreateDropdown(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Dropdown"
     local description = config.Description or nil
     local options = config.Options or {}
     local default = config.Default or nil
-    local multiSelect = config.MultiSelect or false
     local callback = config.Callback or function() end
     local flag = config.Flag or nil
     
     local isOpen = false
-    local selected
-    if multiSelect then
-        selected = {}
-        if type(default) == "table" then
-            for _, v in ipairs(default) do
-                selected[v] = true
-            end
+    local selected = default
+    local selectedIndex = 0
+    for i, opt in ipairs(options) do
+        if opt == selected then
+            selectedIndex = i
+            break
         end
-    else
-        selected = default
     end
     
     local baseHeight = description and 48 or Theme.ElementHeight
-    local holder = Components.CreateElementBase(parent, "Dropdown_" .. name, baseHeight)
+    local holder = CreateElementBase(parent, "Dropdown_" .. name, baseHeight)
     holder.ClipsDescendants = true
     
-    local button = Utility.Create("TextButton", {
+    local clickable = Utility.Create("TextButton", {
+        Name = "Clickable",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, baseHeight),
+        Text = "",
+        ZIndex = 2,
+        Parent = holder
+    })
+    
+    Utility.Create("TextLabel", {
+        Name = "Label",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, description and 4 or 0),
+        Size = UDim2.new(0.5, -12, 0, description and 20 or baseHeight),
+        Font = Theme.Font,
+        Text = name,
+        TextColor3 = Theme.TextPrimary,
+        TextSize = Theme.TextSize,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 2,
+        Parent = holder
+    })
+    
+    if description then
+        Utility.Create("TextLabel", {
+            Name = "Description",
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 24),
+            Size = UDim2.new(0.6, -12, 0, 18),
+            Font = Theme.FontLight,
+            Text = description,
+            TextColor3 = Theme.TextDim,
+            TextSize = Theme.TextSizeSmall,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 2,
+            Parent = holder
+        })
+    end
+    
+    local selectedLabel = Utility.Create("TextLabel", {
+        Name = "Selected",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -30, 0, description and 4 or 0),
+        Size = UDim2.new(0.45, -12, 0, description and 20 or baseHeight),
+        Font = Theme.FontLight,
+        Text = selected or "Select...",
+        TextColor3 = Theme.TextSecondary,
+        TextSize = Theme.TextSizeSmall,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 2,
+        Parent = holder
+    })
+    
+    local arrow = Utility.Create("TextLabel", {
+        Name = "Arrow",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -10, 0, baseHeight / 2),
+        Size = UDim2.new(0, 16, 0, 16),
+        Font = Theme.FontBold,
+        Text = "▼",
+        TextColor3 = Theme.TextDim,
+        TextSize = 10,
+        ZIndex = 2,
+        Rotation = 0,
+        Parent = holder
+    })
+    
+    local optionsContainer = Utility.Create("Frame", {
+        Name = "Options",
+        BackgroundColor3 = Theme.DropdownBackground,
+        BorderSizePixel = 0,
+        Position = UDim2.new(0, 6, 0, baseHeight + 2),
+        Size = UDim2.new(1, -12, 0, 0),
+        ClipsDescendants = true,
+        Visible = false,
+        ZIndex = 10,
+        Parent = holder
+    })
+    Utility.AddCorner(optionsContainer, Theme.CornerRadiusSmall)
+    
+    local optionsList = Utility.Create("ScrollingFrame", {
+        Name = "OptionsList",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.AccentColor,
+        ZIndex = 11,
+        Parent = optionsContainer
+    })
+    local optionLayout = Utility.AddListLayout(optionsList, 1, Enum.HorizontalAlignment.Center)
+    Utility.AddPadding(optionsList, 2, 2, 2, 2)
+    
+    local optionButtons = {}
+    local optionConnections = {}
+    
+    local function rebuildOptions()
+        -- Clean up old option buttons
+        for _, btn in ipairs(optionButtons) do
+            btn:Destroy()
+        end
+        optionButtons = {}
+        for _, conn in ipairs(optionConnections) do
+            conn:Disconnect()
+        end
+        optionConnections = {}
+        
+        for i, opt in ipairs(options) do
+            local isSelected = (selected == opt)
+            
+            local optBtn = Utility.Create("TextButton", {
+                Name = "Option_" .. tostring(opt),
+                BackgroundColor3 = isSelected and Theme.AccentColor or Theme.DropdownBackground,
+                BackgroundTransparency = isSelected and 0.7 or 0,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, -4, 0, 28),
+                Font = Theme.FontLight,
+                Text = tostring(opt),
+                TextColor3 = isSelected and Theme.TextPrimary or Theme.TextSecondary,
+                TextSize = Theme.TextSizeSmall,
+                ZIndex = 12,
+                LayoutOrder = i,
+                Parent = optionsList
+            })
+            Utility.AddCorner(optBtn, Theme.CornerRadiusSmall)
+            
+            local hovEnter = optBtn.MouseEnter:Connect(function()
+                if opt ~= selected then
+                    Utility.SafeTween(optBtn, {BackgroundColor3 = Theme.TabHover}, 0.1)
+                end
+            end)
+            table.insert(optionConnections, hovEnter)
+            
+            local hovLeave = optBtn.MouseLeave:Connect(function()
+                local isSel = (opt == selected)
+                Utility.SafeTween(optBtn, {
+                    BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
+                    BackgroundTransparency = isSel and 0.7 or 0
+                }, 0.1)
+            end)
+            table.insert(optionConnections, hovLeave)
+            
+            local click = optBtn.MouseButton1Click:Connect(function()
+                selected = opt
+                selectedLabel.Text = tostring(opt)
+                
+                -- Update all buttons
+                for _, child in ipairs(optionsList:GetChildren()) do
+                    if child:IsA("TextButton") then
+                        local isSel = (child.Text == tostring(opt))
+                        Utility.SafeTween(child, {
+                            BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
+                            BackgroundTransparency = isSel and 0.7 or 0,
+                        }, 0.15)
+                        child.TextColor3 = isSel and Theme.TextPrimary or Theme.TextSecondary
+                        child.BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground
+                        child.BackgroundTransparency = isSel and 0.7 or 0
+                    end
+                end
+                
+                local ok, err = pcall(callback, selected)
+                if not ok then
+                    warn("[ZenexLib] Dropdown callback error:", err)
+                end
+                
+                if flag and configManager then
+                    configManager._flags[flag].Value = selected
+                end
+                
+                -- Close dropdown after selection
+                task.delay(0.1, function()
+                    isOpen = false
+                    Utility.SafeTween(arrow, {Rotation = 0}, 0.2)
+                    local closedHeight = baseHeight
+                    Utility.SafeTween(holder, {Size = UDim2.new(1, 0, 0, closedHeight)}, 0.2)
+                    task.wait(0.2)
+                    if optionsContainer then
+                        optionsContainer.Visible = false
+                    end
+                end)
+            end)
+            table.insert(optionConnections, click)
+            
+            table.insert(optionButtons, optBtn)
+        end
+    end
+    
+    rebuildOptions()
+    
+    clickable.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        
+        if isOpen then
+            optionsContainer.Visible = true
+            local optionsHeight = math.min(#options * 29 + 4, Theme.MaxDropdownHeight)
+            local totalHeight = baseHeight + optionsHeight + 6
+            
+            Utility.SafeTween(holder, {Size = UDim2.new(1, 0, 0, totalHeight)}, 0.25)
+            optionsContainer.Size = UDim2.new(1, -12, 0, optionsHeight)
+            Utility.SafeTween(arrow, {Rotation = 180}, 0.2)
+        else
+            Utility.SafeTween(arrow, {Rotation = 0}, 0.2)
+            Utility.SafeTween(holder, {Size = UDim2.new(1, 0, 0, baseHeight)}, 0.25)
+            task.wait(0.25)
+            if optionsContainer then
+                optionsContainer.Visible = false
+            end
+        end
+    end)
+    
+    local self = {
+        Instance = holder,
+        _optionConnections = optionConnections,
+        _callback = callback,
+        _flag = flag,
+        _configManager = configManager
+    }
+    
+    function self:Get()
+        return selected
+    end
+    
+    function self:Set(val)
+        selected = val
+        selectedLabel.Text = tostring(val)
+        rebuildOptions()
+        
+        local ok, err = pcall(callback, selected)
+        if not ok then
+            warn("[ZenexLib] Dropdown callback error:", err)
+        end
+    end
+    
+    function self:UpdateOptions(newOptions)
+        options = newOptions
+        if not table.find(options, selected) then
+            selected = options[1]
+            selectedLabel.Text = tostring(selected)
+        end
+        rebuildOptions()
+    end
+    
+    function self:AddOption(opt)
+        table.insert(options, opt)
+        rebuildOptions()
+    end
+    
+    function self:RemoveOption(opt)
+        for i, o in ipairs(options) do
+            if o == opt then
+                table.remove(options, i)
+                if selected == opt then
+                    selected = options[1]
+                    selectedLabel.Text = tostring(selected)
+                end
+                break
+            end
+        end
+        rebuildOptions()
+    end
+    
+    function self:Destroy()
+        for _, conn in ipairs(optionConnections) do
+            conn:Disconnect()
+        end
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
+    
+    if flag and configManager then
+        configManager:RegisterFlag(flag, {
+            Type = "Dropdown",
+            Value = selected,
+            Get = function() return selected end,
+            Set = function(v) self:Set(v) end
+        })
+    end
+    
+    return self
+end
+
+-- ============================================================================
+-- MULTI-SELECT DROPDOWN COMPONENT
+-- ============================================================================
+
+local function CreateMultiDropdown(parent, config, configManager)
+    config = config or {}
+    local name = config.Name or "MultiDropdown"
+    local description = config.Description or nil
+    local options = config.Options or {}
+    local default = config.Default or {}
+    local callback = config.Callback or function() end
+    local flag = config.Flag or nil
+    local maxVisibleItems = config.MaxVisibleItems or 6
+    
+    local isOpen = false
+    local selected = {}
+    if type(default) == "table" then
+        for _, v in ipairs(default) do
+            selected[v] = true
+        end
+    end
+    
+    local baseHeight = description and 48 or Theme.ElementHeight
+    local holder = CreateElementBase(parent, "MultiDropdown_" .. name, baseHeight)
+    holder.ClipsDescendants = true
+    
+    local clickable = Utility.Create("TextButton", {
         Name = "Clickable",
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, baseHeight),
@@ -1066,16 +1634,18 @@ function Components.Dropdown(parent, config, configManager)
     end
     
     local function getDisplayText()
-        if multiSelect then
-            local items = {}
-            for _, opt in ipairs(options) do
-                if selected[opt] then
-                    table.insert(items, opt)
-                end
+        local items = {}
+        for _, opt in ipairs(options) do
+            if selected[opt] then
+                table.insert(items, tostring(opt))
             end
-            return #items > 0 and table.concat(items, ", ") or "None"
+        end
+        if #items == 0 then
+            return "None"
+        elseif #items <= 2 then
+            return table.concat(items, ", ")
         else
-            return selected or "Select..."
+            return items[1] .. " +" .. tostring(#items - 1)
         end
     end
     
@@ -1088,7 +1658,7 @@ function Components.Dropdown(parent, config, configManager)
         Font = Theme.FontLight,
         Text = getDisplayText(),
         TextColor3 = Theme.TextSecondary,
-        TextSize = Theme.TextSizeSmall,
+        TextSize = Theme.TextSizeSmall - 1,
         TextXAlignment = Enum.TextXAlignment.Right,
         TextTruncate = Enum.TextTruncate.AtEnd,
         ZIndex = 2,
@@ -1138,95 +1708,85 @@ function Components.Dropdown(parent, config, configManager)
     Utility.AddPadding(optionsList, 2, 2, 2, 2)
     
     local optionButtons = {}
+    local optionConnections = {}
+    
+    local function updateDisplay()
+        selectedLabel.Text = getDisplayText()
+    end
     
     local function rebuildOptions()
         for _, btn in ipairs(optionButtons) do
             btn:Destroy()
         end
         optionButtons = {}
+        for _, conn in ipairs(optionConnections) do
+            conn:Disconnect()
+        end
+        optionConnections = {}
         
         for i, opt in ipairs(options) do
-            local isSelected = multiSelect and selected[opt] or (selected == opt)
+            local isSelected = selected[opt] or false
             
             local optBtn = Utility.Create("TextButton", {
-                Name = "Option_" .. opt,
+                Name = "Option_" .. tostring(opt),
                 BackgroundColor3 = isSelected and Theme.AccentColor or Theme.DropdownBackground,
                 BackgroundTransparency = isSelected and 0.7 or 0,
                 BorderSizePixel = 0,
                 Size = UDim2.new(1, -4, 0, 28),
                 Font = Theme.FontLight,
-                Text = opt,
+                Text = (isSelected and "✓ " or "  ") .. tostring(opt),
                 TextColor3 = isSelected and Theme.TextPrimary or Theme.TextSecondary,
                 TextSize = Theme.TextSizeSmall,
+                TextXAlignment = Enum.TextXAlignment.Left,
                 ZIndex = 12,
                 LayoutOrder = i,
                 Parent = optionsList
             })
             Utility.AddCorner(optBtn, Theme.CornerRadiusSmall)
+            Utility.AddPadding(optBtn, 0, 4, 0, 4)
             
-            optBtn.MouseEnter:Connect(function()
-                if not (multiSelect and selected[opt] or (selected == opt)) then
-                    Utility.Tween(optBtn, {BackgroundColor3 = Theme.TabHover}, 0.1)
+            local hovEnter = optBtn.MouseEnter:Connect(function()
+                if not selected[opt] then
+                    Utility.SafeTween(optBtn, {BackgroundColor3 = Theme.TabHover}, 0.1)
                 end
             end)
-            optBtn.MouseLeave:Connect(function()
-                local isSel = multiSelect and selected[opt] or (selected == opt)
-                Utility.Tween(optBtn, {
+            table.insert(optionConnections, hovEnter)
+            
+            local hovLeave = optBtn.MouseLeave:Connect(function()
+                local isSel = selected[opt] or false
+                Utility.SafeTween(optBtn, {
                     BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
                     BackgroundTransparency = isSel and 0.7 or 0
                 }, 0.1)
             end)
+            table.insert(optionConnections, hovLeave)
             
-            optBtn.MouseButton1Click:Connect(function()
-                if multiSelect then
-                    selected[opt] = not selected[opt]
-                    local isSel = selected[opt]
-                    Utility.Tween(optBtn, {
-                        BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
-                        BackgroundTransparency = isSel and 0.7 or 0,
-                    }, 0.15)
-                    optBtn.TextColor3 = isSel and Theme.TextPrimary or Theme.TextSecondary
-                    selectedLabel.Text = getDisplayText()
-                    
-                    local result = {}
-                    for _, o in ipairs(options) do
-                        if selected[o] then table.insert(result, o) end
-                    end
-                    pcall(callback, result)
-                    if flag and configManager then
-                        configManager._flags[flag].Value = result
-                    end
-                else
-                    selected = opt
-                    selectedLabel.Text = getDisplayText()
-                    
-                    -- Update all buttons
-                    for _, child in ipairs(optionsList:GetChildren()) do
-                        if child:IsA("TextButton") then
-                            local isSel = (child.Text == selected)
-                            Utility.Tween(child, {
-                                BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground,
-                                BackgroundTransparency = isSel and 0.7 or 0,
-                            }, 0.15)
-                            child.TextColor3 = isSel and Theme.TextPrimary or Theme.TextSecondary
-                        end
-                    end
-                    
-                    pcall(callback, selected)
-                    if flag and configManager then
-                        configManager._flags[flag].Value = selected
-                    end
-                    
-                    -- Close dropdown after single select
-                    task.wait(0.1)
-                    isOpen = false
-                    Utility.Tween(arrow, {Rotation = 0}, 0.2)
-                    local closedHeight = baseHeight
-                    Utility.Tween(holder, {Size = UDim2.new(1, 0, 0, closedHeight)}, 0.2)
-                    task.wait(0.2)
-                    optionsContainer.Visible = false
+            local click = optBtn.MouseButton1Click:Connect(function()
+                selected[opt] = not selected[opt]
+                local isSel = selected[opt]
+                
+                optBtn.BackgroundColor3 = isSel and Theme.AccentColor or Theme.DropdownBackground
+                optBtn.BackgroundTransparency = isSel and 0.7 or 0
+                optBtn.TextColor3 = isSel and Theme.TextPrimary or Theme.TextSecondary
+                optBtn.Text = (isSel and "✓ " or "  ") .. tostring(opt)
+                
+                updateDisplay()
+                
+                local result = {}
+                for _, o in ipairs(options) do
+                    if selected[o] then table.insert(result, o) end
+                end
+                
+                local ok, err = pcall(callback, result)
+                if not ok then
+                    warn("[ZenexLib] MultiDropdown callback error:", err)
+                end
+                
+                if flag and configManager then
+                    configManager._flags[flag].Value = result
                 end
             end)
+            table.insert(optionConnections, click)
             
             table.insert(optionButtons, optBtn)
         end
@@ -1234,75 +1794,92 @@ function Components.Dropdown(parent, config, configManager)
     
     rebuildOptions()
     
-    button.MouseButton1Click:Connect(function()
+    clickable.MouseButton1Click:Connect(function()
         isOpen = not isOpen
         
         if isOpen then
             optionsContainer.Visible = true
-            local optionsHeight = math.min(#options * 29 + 4, 150)
-            local totalHeight = baseHeight + optionsHeight + 4
-            Utility.Tween(holder, {Size = UDim2.new(1, 0, 0, totalHeight)}, 0.25)
+            local optionsHeight = math.min(#options * 29 + 4, maxVisibleItems * 29 + 4)
+            local totalHeight = baseHeight + optionsHeight + 6
+            
+            Utility.SafeTween(holder, {Size = UDim2.new(1, 0, 0, totalHeight)}, 0.25)
             optionsContainer.Size = UDim2.new(1, -12, 0, optionsHeight)
-            Utility.Tween(arrow, {Rotation = 180}, 0.2)
+            Utility.SafeTween(arrow, {Rotation = 180}, 0.2)
         else
-            Utility.Tween(arrow, {Rotation = 0}, 0.2)
-            Utility.Tween(holder, {Size = UDim2.new(1, 0, 0, baseHeight)}, 0.25)
+            Utility.SafeTween(arrow, {Rotation = 0}, 0.2)
+            Utility.SafeTween(holder, {Size = UDim2.new(1, 0, 0, baseHeight)}, 0.25)
             task.wait(0.25)
-            optionsContainer.Visible = false
+            if optionsContainer then
+                optionsContainer.Visible = false
+            end
         end
     end)
     
-    local dropdownObj = {
+    local self = {
         Instance = holder,
-        _connections = {},
-        Get = function()
-            if multiSelect then
-                local result = {}
-                for _, o in ipairs(options) do
-                    if selected[o] then table.insert(result, o) end
-                end
-                return result
-            else
-                return selected
-            end
-        end,
-        Set = function(self, val)
-            if multiSelect and type(val) == "table" then
-                selected = {}
-                for _, v in ipairs(val) do selected[v] = true end
-            else
-                selected = val
-            end
-            selectedLabel.Text = getDisplayText()
-            rebuildOptions()
-            pcall(callback, multiSelect and self.Get() or selected)
-        end,
-        UpdateOptions = function(self, newOptions)
-            options = newOptions
-            rebuildOptions()
-        end,
-        Destroy = function(self)
-            holder:Destroy()
-        end
+        _optionConnections = optionConnections,
+        _callback = callback,
+        _flag = flag,
+        _configManager = configManager
     }
+    
+    function self:Get()
+        local result = {}
+        for _, o in ipairs(options) do
+            if selected[o] then table.insert(result, o) end
+        end
+        return result
+    end
+    
+    function self:Set(val)
+        selected = {}
+        if type(val) == "table" then
+            for _, v in ipairs(val) do
+                selected[v] = true
+            end
+        end
+        rebuildOptions()
+        updateDisplay()
+        
+        local ok, err = pcall(callback, self:Get())
+        if not ok then
+            warn("[ZenexLib] MultiDropdown callback error:", err)
+        end
+    end
+    
+    function self:UpdateOptions(newOptions)
+        options = newOptions
+        rebuildOptions()
+        updateDisplay()
+    end
+    
+    function self:Destroy()
+        for _, conn in ipairs(optionConnections) do
+            conn:Disconnect()
+        end
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
     
     if flag and configManager then
         configManager:RegisterFlag(flag, {
-            Type = "Dropdown",
-            Value = multiSelect and dropdownObj.Get() or selected,
-            Get = function() return dropdownObj.Get() end,
-            Set = function(v) dropdownObj:Set(v) end
+            Type = "MultiDropdown",
+            Value = self:Get(),
+            Get = function() return self:Get() end,
+            Set = function(v) self:Set(v) end
         })
     end
     
-    return dropdownObj
+    return self
 end
 
 -- ============================================================================
 -- TEXTBOX / INPUT COMPONENT
 -- ============================================================================
 
-function Components.Input(parent, config, configManager)
+local function CreateInput(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Input"
     local description = config.Description or nil
@@ -1311,10 +1888,11 @@ function Components.Input(parent, config, configManager)
     local callback = config.Callback or function() end
     local flag = config.Flag or nil
     local clearOnFocus = config.ClearOnFocus or false
+    local numeric = config.Numeric or false
     
     local value = default
     local totalHeight = description and 62 or 52
-    local holder = Components.CreateElementBase(parent, "Input_" .. name, totalHeight)
+    local holder = CreateElementBase(parent, "Input_" .. name, totalHeight)
     
     Utility.Create("TextLabel", {
         Name = "Label",
@@ -1355,7 +1933,7 @@ function Components.Input(parent, config, configManager)
         Position = UDim2.new(0, 10, 0, inputY),
         Size = UDim2.new(1, -20, 0, 22),
         Font = Theme.FontLight,
-        Text = default,
+        Text = tostring(default),
         PlaceholderText = placeholder,
         PlaceholderColor3 = Theme.TextDim,
         TextColor3 = Theme.TextPrimary,
@@ -1368,54 +1946,84 @@ function Components.Input(parent, config, configManager)
     Utility.AddPadding(inputBox, 0, 8, 0, 8)
     
     inputBox.Focused:Connect(function()
-        Utility.Tween(inputBox, {BackgroundColor3 = Theme.TabHover}, 0.15)
+        Utility.SafeTween(inputBox, {BackgroundColor3 = Theme.TabHover}, 0.15)
     end)
     
     inputBox.FocusLost:Connect(function(enterPressed)
-        Utility.Tween(inputBox, {BackgroundColor3 = Theme.InputBackground}, 0.15)
-        value = inputBox.Text
-        pcall(callback, value, enterPressed)
+        Utility.SafeTween(inputBox, {BackgroundColor3 = Theme.InputBackground}, 0.15)
+        
+        local text = inputBox.Text
+        if numeric then
+            local num = tonumber(text)
+            if num then
+                text = tostring(num)
+                inputBox.Text = text
+            end
+        end
+        
+        value = text
+        
+        local ok, err = pcall(callback, value, enterPressed)
+        if not ok then
+            warn("[ZenexLib] Input callback error:", err)
+        end
+        
         if flag and configManager then
             configManager._flags[flag].Value = value
         end
     end)
     
-    local inputObj = {
+    local self = {
         Instance = holder,
-        _connections = {},
-        Get = function() return value end,
-        Set = function(self, newVal, skipCallback)
-            value = newVal
-            inputBox.Text = newVal
-            if not skipCallback then
-                pcall(callback, value, false)
-            end
-            if flag and configManager then
-                configManager._flags[flag].Value = value
-            end
-        end,
-        Destroy = function(self)
-            holder:Destroy()
-        end
+        _callback = callback,
+        _flag = flag,
+        _configManager = configManager
     }
+    
+    function self:Get()
+        return value
+    end
+    
+    function self:Set(newVal, skipCallback)
+        value = tostring(newVal)
+        inputBox.Text = value
+        
+        if not skipCallback then
+            local ok, err = pcall(callback, value, false)
+            if not ok then
+                warn("[ZenexLib] Input callback error:", err)
+            end
+        end
+        
+        if flag and configManager then
+            configManager._flags[flag].Value = value
+        end
+    end
+    
+    function self:Destroy()
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
     
     if flag and configManager then
         configManager:RegisterFlag(flag, {
             Type = "Input",
             Value = value,
             Get = function() return value end,
-            Set = function(v) inputObj:Set(v, false) end
+            Set = function(v) self:Set(v, true) end
         })
     end
     
-    return inputObj
+    return self
 end
 
 -- ============================================================================
 -- KEYBIND COMPONENT
 -- ============================================================================
 
-function Components.Keybind(parent, config, configManager)
+local function CreateKeybind(parent, config, configManager)
     config = config or {}
     local name = config.Name or "Keybind"
     local description = config.Description or nil
@@ -1429,7 +2037,7 @@ function Components.Keybind(parent, config, configManager)
     local isBinding = false
     
     local totalHeight = description and 48 or Theme.ElementHeight
-    local holder = Components.CreateElementBase(parent, "Keybind_" .. name, totalHeight)
+    local holder = CreateElementBase(parent, "Keybind_" .. name, totalHeight)
     
     Utility.Create("TextLabel", {
         Name = "Label",
@@ -1468,7 +2076,7 @@ function Components.Keybind(parent, config, configManager)
         Position = UDim2.new(1, -10, 0.5, 0),
         Size = UDim2.new(0, 70, 0, 24),
         Font = Theme.Font,
-        Text = currentKey.Name or "None",
+        Text = currentKey and currentKey.Name or "None",
         TextColor3 = Theme.TextSecondary,
         TextSize = Theme.TextSizeSmall,
         ZIndex = 3,
@@ -1481,7 +2089,7 @@ function Components.Keybind(parent, config, configManager)
     keyButton.MouseButton1Click:Connect(function()
         isBinding = true
         keyButton.Text = "..."
-        Utility.Tween(keyButton, {BackgroundColor3 = Theme.AccentColor}, 0.15)
+        Utility.SafeTween(keyButton, {BackgroundColor3 = Theme.AccentColor}, 0.15)
         keyButton.TextColor3 = Theme.TextPrimary
     end)
     
@@ -1491,17 +2099,40 @@ function Components.Keybind(parent, config, configManager)
                 if input.KeyCode == Enum.KeyCode.Escape then
                     -- Cancel binding
                     isBinding = false
-                    keyButton.Text = currentKey.Name or "None"
-                    Utility.Tween(keyButton, {BackgroundColor3 = Theme.InputBackground}, 0.15)
+                    keyButton.Text = currentKey and currentKey.Name or "None"
+                    Utility.SafeTween(keyButton, {BackgroundColor3 = Theme.InputBackground}, 0.15)
                     keyButton.TextColor3 = Theme.TextSecondary
                     return
                 end
                 currentKey = input.KeyCode
                 isBinding = false
                 keyButton.Text = currentKey.Name
-                Utility.Tween(keyButton, {BackgroundColor3 = Theme.InputBackground}, 0.15)
+                Utility.SafeTween(keyButton, {BackgroundColor3 = Theme.InputBackground}, 0.15)
                 keyButton.TextColor3 = Theme.TextSecondary
-                pcall(changedCallback, currentKey)
+                
+                local ok, err = pcall(changedCallback, currentKey)
+                if not ok then
+                    warn("[ZenexLib] Keybind changed callback error:", err)
+                end
+                
+                if flag and configManager then
+                    configManager._flags[flag].Value = currentKey
+                end
+            elseif input.UserInputType == Enum.UserInputType.MouseButton1 
+                or input.UserInputType == Enum.UserInputType.MouseButton2
+                or input.UserInputType == Enum.UserInputType.MouseButton3 then
+                -- Support mouse buttons
+                currentKey = input.UserInputType
+                isBinding = false
+                keyButton.Text = input.UserInputType.Name
+                Utility.SafeTween(keyButton, {BackgroundColor3 = Theme.InputBackground}, 0.15)
+                keyButton.TextColor3 = Theme.TextSecondary
+                
+                local ok, err = pcall(changedCallback, currentKey)
+                if not ok then
+                    warn("[ZenexLib] Keybind changed callback error:", err)
+                end
+                
                 if flag and configManager then
                     configManager._flags[flag].Value = currentKey
                 end
@@ -1509,83 +2140,127 @@ function Components.Keybind(parent, config, configManager)
         else
             if not gameProcessed or not ignoreGameProcessed then
                 if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == currentKey then
-                    pcall(callback, currentKey)
+                    local ok, err = pcall(callback, currentKey)
+                    if not ok then
+                        warn("[ZenexLib] Keybind callback error:", err)
+                    end
+                elseif typeof(currentKey) == "EnumItem" and input.UserInputType == currentKey then
+                    local ok, err = pcall(callback, currentKey)
+                    if not ok then
+                        warn("[ZenexLib] Keybind callback error:", err)
+                    end
                 end
             end
         end
     end)
     
-    local keybindObj = {
+    local self = {
         Instance = holder,
-        _connections = {inputConn},
-        Get = function() return currentKey end,
-        Set = function(self, newKey, skipCallback)
-            currentKey = newKey
-            keyButton.Text = currentKey.Name or "None"
-            if not skipCallback then
-                pcall(changedCallback, currentKey)
-            end
-            if flag and configManager then
-                configManager._flags[flag].Value = currentKey
-            end
-        end,
-        Destroy = function(self)
-            for _, conn in ipairs(self._connections) do
-                conn:Disconnect()
-            end
-            holder:Destroy()
-        end
+        _inputConnection = inputConn,
+        _callback = callback,
+        _changedCallback = changedCallback,
+        _flag = flag,
+        _configManager = configManager
     }
+    
+    function self:Get()
+        return currentKey
+    end
+    
+    function self:Set(newKey, skipCallback)
+        currentKey = newKey
+        keyButton.Text = typeof(newKey) == "EnumItem" and newKey.Name or tostring(newKey)
+        
+        if not skipCallback then
+            local ok, err = pcall(changedCallback, currentKey)
+            if not ok then
+                warn("[ZenexLib] Keybind changed callback error:", err)
+            end
+        end
+        
+        if flag and configManager then
+            configManager._flags[flag].Value = currentKey
+        end
+    end
+    
+    function self:Destroy()
+        if inputConn then
+            inputConn:Disconnect()
+        end
+        if flag and configManager then
+            configManager:UnregisterFlag(flag)
+        end
+        pcall(function() holder:Destroy() end)
+    end
     
     if flag and configManager then
         configManager:RegisterFlag(flag, {
             Type = "Keybind",
             Value = currentKey,
             Get = function() return currentKey end,
-            Set = function(v) keybindObj:Set(v, false) end
+            Set = function(v) self:Set(v, true) end
         })
     end
     
-    return keybindObj
+    return self
 end
 
 -- ============================================================================
 -- LABEL COMPONENT
 -- ============================================================================
 
-function Components.Label(parent, config)
+local function CreateLabel(parent, config)
     config = config or {}
     local text = config.Text or "Label"
+    local color = config.Color or Theme.TextSecondary
+    local fontSize = config.FontSize or Theme.TextSizeSmall
     
     local label = Utility.Create("TextLabel", {
         Name = "Label",
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 20),
-        Font = Theme.Font,
+        Font = Theme.FontLight,
         Text = text,
-        TextColor3 = Theme.TextSecondary,
-        TextSize = Theme.TextSizeSmall,
+        TextColor3 = color,
+        TextSize = fontSize,
         TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
         Parent = parent
     })
-    Utility.AddPadding(label, 0, 0, 0, 8)
+    Utility.AddPadding(label, 2, 0, 2, 8)
     
-    return {
+    local self = {
         Instance = label,
-        SetText = function(self, newText)
-            label.Text = newText
-        end,
-        Destroy = function(self)
-            label:Destroy()
-        end
+        _text = text,
+        _color = color
     }
+    
+    function self:SetText(newText)
+        label.Text = newText
+        self._text = newText
+    end
+    
+    function self:SetColor(newColor)
+        label.TextColor3 = newColor
+        self._color = newColor
+    end
+    
+    function self:Get()
+        return label.Text
+    end
+    
+    function self:Destroy()
+        pcall(function() label:Destroy() end)
+    end
+    
+    return self
 end
 
 -- ============================================================================
 -- SECTION / DIVIDER COMPONENT
 -- ============================================================================
 
-function Components.Section(parent, config)
+local function CreateSection(parent, config)
     config = config or {}
     local title = config.Title or "Section"
     
@@ -1634,17 +2309,31 @@ function Components.Section(parent, config)
         Parent = holder
     })
     
-    return {
+    local self = {
         Instance = holder,
-        Destroy = function(self) holder:Destroy() end
+        _title = title
     }
+    
+    function self:SetTitle(newTitle)
+        local titleLabel = holder:FindFirstChild("Title")
+        if titleLabel then
+            titleLabel.Text = string.upper(newTitle)
+            self._title = newTitle
+        end
+    end
+    
+    function self:Destroy()
+        pcall(function() holder:Destroy() end)
+    end
+    
+    return self
 end
 
 -- ============================================================================
 -- PARAGRAPH COMPONENT
 -- ============================================================================
 
-function Components.Paragraph(parent, config)
+local function CreateParagraph(parent, config)
     config = config or {}
     local title = config.Title or "Paragraph"
     local content = config.Content or ""
@@ -1698,12 +2387,27 @@ function Components.Paragraph(parent, config)
         Parent = innerFrame
     })
     
-    return {
+    local self = {
         Instance = holder,
-        SetTitle = function(self, t) titleLabel.Text = t end,
-        SetContent = function(self, c) contentLabel.Text = c end,
-        Destroy = function(self) holder:Destroy() end
+        _title = title,
+        _content = content
     }
+    
+    function self:SetTitle(t)
+        titleLabel.Text = t
+        self._title = t
+    end
+    
+    function self:SetContent(c)
+        contentLabel.Text = c
+        self._content = c
+    end
+    
+    function self:Destroy()
+        pcall(function() holder:Destroy() end)
+    end
+    
+    return self
 end
 
 -- ============================================================================
@@ -1722,6 +2426,7 @@ function Tab.new(window, config)
     self._container = nil
     self._tabButton = nil
     self._configManager = window._configManager
+    self._connections = {}
     return self
 end
 
@@ -1735,8 +2440,8 @@ function Tab:_createContainer(parent)
         ScrollBarThickness = 3,
         ScrollBarImageColor3 = Theme.AccentColor,
         ScrollBarImageTransparency = 0.3,
-        Visible = false,
         BorderSizePixel = 0,
+        Visible = false,
         Parent = parent
     })
     Utility.AddListLayout(self._container, Theme.ElementPadding, Enum.HorizontalAlignment.Center)
@@ -1746,70 +2451,89 @@ function Tab:_createContainer(parent)
 end
 
 function Tab:AddButton(config)
-    local element = Components.Button(self._container, config, self._configManager)
+    local element = CreateButton(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddToggle(config)
-    local element = Components.Toggle(self._container, config, self._configManager)
+    local element = CreateToggle(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddSlider(config)
-    local element = Components.Slider(self._container, config, self._configManager)
+    local element = CreateSlider(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddDropdown(config)
-    local element = Components.Dropdown(self._container, config, self._configManager)
+    local element = CreateDropdown(self._container, config, self._configManager)
+    table.insert(self._elements, element)
+    return element
+end
+
+function Tab:AddMultiDropdown(config)
+    local element = CreateMultiDropdown(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddInput(config)
-    local element = Components.Input(self._container, config, self._configManager)
+    local element = CreateInput(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddKeybind(config)
-    local element = Components.Keybind(self._container, config, self._configManager)
+    local element = CreateKeybind(self._container, config, self._configManager)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddLabel(config)
-    local element = Components.Label(self._container, config)
+    local element = CreateLabel(self._container, config)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddSection(config)
-    local element = Components.Section(self._container, config)
+    local element = CreateSection(self._container, config)
     table.insert(self._elements, element)
     return element
 end
 
 function Tab:AddParagraph(config)
-    local element = Components.Paragraph(self._container, config)
+    local element = CreateParagraph(self._container, config)
     table.insert(self._elements, element)
     return element
+end
+
+function Tab:AddColorPicker(config)
+    -- Placeholder for future implementation
+    warn("[ZenexLib] ColorPicker not yet implemented, using Label instead")
+    return self:AddLabel({ Text = config.Name or "Color Picker" })
 end
 
 function Tab:Destroy()
     for _, element in ipairs(self._elements) do
         if element.Destroy then
-            element:Destroy()
+            pcall(function() element:Destroy() end)
         end
     end
-    if self._container then
-        self._container:Destroy()
+    self._elements = {}
+    
+    for _, conn in ipairs(self._connections) do
+        if typeof(conn) == "RBXScriptConnection" then
+            conn:Disconnect()
+        end
     end
-    if self._tabButton then
-        self._tabButton:Destroy()
+    self._connections = {}
+    
+    if self._container then
+        pcall(function() self._container:Destroy() end)
+        self._container = nil
     end
 end
 
@@ -1826,13 +2550,17 @@ function Window.new(screenGui, config, configManager)
     self._name = config.Name or "ZenexLib"
     self._subtitle = config.Subtitle or nil
     self._icon = config.Icon or nil
-    self._configName = config.ConfigName or "ZenexConfig"
+    self._configName = config.ConfigName or config.Name or "ZenexConfig"
     self._configManager = configManager
     self._tabs = {}
     self._activeTab = nil
     self._isMinimized = false
-    self._connections = {}
-    self._elements = {} -- window-level UI elements
+    self._isHidden = false
+    self._connections = ConnectionTracker.new()
+    self._elements = {}
+    self._destroyed = false
+    
+    self._notificationManager = NotificationManager.new()
     
     self:_build()
     return self
@@ -1846,7 +2574,7 @@ function Window:_build()
         BackgroundColor3 = Theme.Background,
         BorderSizePixel = 0,
         Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, 0, 0, 0), -- Start at 0 for open animation
+        Size = UDim2.new(0, 0, 0, 0),
         ClipsDescendants = true,
         Parent = self._screenGui
     })
@@ -1892,7 +2620,7 @@ function Window:_build()
     
     -- Icon
     if self._icon then
-        Utility.Create("ImageLabel", {
+        self._titleIconImage = Utility.Create("ImageLabel", {
             Name = "Icon",
             BackgroundTransparency = 1,
             Position = UDim2.new(0, 0, 0.5, -10),
@@ -1905,7 +2633,7 @@ function Window:_build()
     end
     
     -- Title text
-    Utility.Create("TextLabel", {
+    self._titleTextLabel = Utility.Create("TextLabel", {
         Name = "Title",
         BackgroundTransparency = 1,
         Position = UDim2.new(0, titleLayoutX, 0, 0),
@@ -1921,8 +2649,9 @@ function Window:_build()
     })
     
     -- Subtitle
+    self._subtitleTextLabel = nil
     if self._subtitle then
-        Utility.Create("TextLabel", {
+        self._subtitleTextLabel = Utility.Create("TextLabel", {
             Name = "Subtitle",
             BackgroundTransparency = 1,
             Position = UDim2.new(0, titleLayoutX, 0.5, 1),
@@ -1966,18 +2695,18 @@ function Window:_build()
     })
     Utility.AddCorner(closeBtn, Theme.CornerRadiusSmall)
     
-    closeBtn.MouseEnter:Connect(function()
-        Utility.Tween(closeBtn, {BackgroundTransparency = 0.4}, 0.15)
-    end)
-    closeBtn.MouseLeave:Connect(function()
-        Utility.Tween(closeBtn, {BackgroundTransparency = 0.85}, 0.15)
-    end)
-    closeBtn.MouseButton1Click:Connect(function()
+    self._connections:Add(closeBtn.MouseEnter:Connect(function()
+        Utility.SafeTween(closeBtn, {BackgroundTransparency = 0.4}, 0.15)
+    end))
+    self._connections:Add(closeBtn.MouseLeave:Connect(function()
+        Utility.SafeTween(closeBtn, {BackgroundTransparency = 0.85}, 0.15)
+    end))
+    self._connections:Add(closeBtn.MouseButton1Click:Connect(function()
         self:Destroy()
-    end)
+    end))
     
     -- Minimize button
-    local minimizeBtn = Utility.Create("TextButton", {
+    self._minimizeBtn = Utility.Create("TextButton", {
         Name = "Minimize",
         AnchorPoint = Vector2.new(1, 0.5),
         BackgroundColor3 = Theme.TextDim,
@@ -1991,27 +2720,24 @@ function Window:_build()
         ZIndex = 8,
         Parent = titleRight
     })
-    Utility.AddCorner(minimizeBtn, Theme.CornerRadiusSmall)
+    Utility.AddCorner(self._minimizeBtn, Theme.CornerRadiusSmall)
     
-    minimizeBtn.MouseEnter:Connect(function()
-        Utility.Tween(minimizeBtn, {BackgroundTransparency = 0.4}, 0.15)
-    end)
-    minimizeBtn.MouseLeave:Connect(function()
-        Utility.Tween(minimizeBtn, {BackgroundTransparency = 0.85}, 0.15)
-    end)
+    self._connections:Add(self._minimizeBtn.MouseEnter:Connect(function()
+        Utility.SafeTween(self._minimizeBtn, {BackgroundTransparency = 0.4}, 0.15)
+    end))
+    self._connections:Add(self._minimizeBtn.MouseLeave:Connect(function()
+        Utility.SafeTween(self._minimizeBtn, {BackgroundTransparency = 0.85}, 0.15)
+    end))
     
     self._originalSize = UDim2.new(0, Theme.WindowWidth, 0, Theme.WindowHeight)
     self._minimizedSize = UDim2.new(0, Theme.WindowWidth, 0, Theme.TitleBarHeight)
     
-    minimizeBtn.MouseButton1Click:Connect(function()
+    self._connections:Add(self._minimizeBtn.MouseButton1Click:Connect(function()
         self:_toggleMinimize()
-    end)
+    end))
     
     -- Make draggable
-    local dragConns = Utility.Percent.MakeDraggable(self._titleBar, self._mainFrame)
-    for _, c in ipairs(dragConns) do
-        table.insert(self._connections, c)
-    end
+    Utility.MakeDraggable(self._titleBar, self._mainFrame, self._connections)
     
     -- Body: Tab bar (left) + Content (right)
     self._bodyFrame = Utility.Create("Frame", {
@@ -2108,118 +2834,136 @@ function Window:_build()
     end
     
     -- Make toggle button draggable
-    local toggleDragConns = Utility.MakeDraggable(self._toggleButton, self._toggleButton)
-    for _, c in ipairs(toggleDragConns) do
-        table.insert(self._connections, c)
-    end
+    Utility.MakeDraggable(self._toggleButton, self._toggleButton, self._connections)
     
     -- Track if actually dragged vs clicked
     local toggleDragStart = nil
     local toggleWasDragged = false
     
-    self._toggleButton.InputBegan:Connect(function(input)
+    self._connections:Add(self._toggleButton.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             toggleDragStart = input.Position
             toggleWasDragged = false
         end
-    end)
+    end))
     
-    self._toggleButton.InputChanged:Connect(function(input)
+    self._connections:Add(self._toggleButton.InputChanged:Connect(function(input)
         if toggleDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = (input.Position - toggleDragStart).Magnitude
             if delta > 5 then
                 toggleWasDragged = true
             end
         end
-    end)
+    end))
     
-    self._toggleButton.MouseButton1Click:Connect(function()
+    self._connections:Add(self._toggleButton.MouseButton1Click:Connect(function()
         if not toggleWasDragged then
-            self:_show()
+            self:_restore()
         end
         toggleDragStart = nil
         toggleWasDragged = false
-    end)
+    end))
     
     -- Open animation
-    Utility.Tween(self._mainFrame, {Size = self._originalSize}, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    Utility.SafeTween(self._mainFrame, {Size = self._originalSize}, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     
     -- Initialize notification system
-    NotificationManager:Init(self._screenGui)
+    self._notificationManager:Init(self._screenGui)
 end
 
 function Window:_toggleMinimize()
+    if self._isHidden then return end
+    
     self._isMinimized = not self._isMinimized
     
     if self._isMinimized then
-        Utility.Tween(self._mainFrame, {Size = self._minimizedSize}, Theme.AnimationSpeed)
+        Utility.SafeTween(self._mainFrame, {Size = self._minimizedSize}, Theme.AnimationSpeed)
         self._toggleButton.Visible = true
-        Utility.Tween(self._toggleButton, {ImageTransparency = 0}, 0.2)
+        Utility.SafeTween(self._toggleButton, {ImageTransparency = 0}, 0.2)
     else
-        Utility.Tween(self._mainFrame, {Size = self._originalSize}, Theme.AnimationSpeed)
+        self._mainFrame.Visible = true
+        Utility.SafeTween(self._mainFrame, {Size = self._originalSize}, Theme.AnimationSpeed)
         self._toggleButton.Visible = false
     end
 end
 
 function Window:_hide()
-    Utility.Tween(self._mainFrame, {
+    if self._isHidden then return end
+    self._isHidden = true
+    
+    Utility.SafeTween(self._mainFrame, {
         Size = UDim2.new(0, 0, 0, 0),
     }, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+    
     task.wait(0.3)
     self._mainFrame.Visible = false
     self._toggleButton.Visible = true
 end
 
-function Window:_show()
-    self._mainFrame.Visible = true
+function Window:_restore()
+    if not self._isHidden and not self._isMinimized then return end
+    
+    self._isHidden = false
     self._isMinimized = false
+    self._mainFrame.Visible = true
     self._mainFrame.Size = UDim2.new(0, 0, 0, 0)
-    Utility.Tween(self._mainFrame, {Size = self._originalSize}, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    
+    Utility.SafeTween(self._mainFrame, {Size = self._originalSize}, 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     self._toggleButton.Visible = false
 end
 
+function Window:_show()
+    self:_restore()
+end
+
 function Window:_selectTab(tab)
-    if self._activeTab == tab then return end
+    if not tab or self._activeTab == tab then return end
+    if self._destroyed then return end
     
     -- Deselect old tab
-    if self._activeTab then
+    if self._activeTab and self._activeTab._container then
         self._activeTab._container.Visible = false
         if self._activeTab._tabButton then
-            Utility.Tween(self._activeTab._tabButton, {
+            Utility.SafeTween(self._activeTab._tabButton, {
                 BackgroundColor3 = Theme.TabInactive,
                 BackgroundTransparency = 0.5
             }, 0.15)
             local label = self._activeTab._tabButton:FindFirstChild("Label")
             if label then
-                Utility.Tween(label, {TextColor3 = Theme.TextSecondary}, 0.15)
+                Utility.SafeTween(label, {TextColor3 = Theme.TextSecondary}, 0.15)
             end
             local indicator = self._activeTab._tabButton:FindFirstChild("Indicator")
             if indicator then
-                Utility.Tween(indicator, {BackgroundTransparency = 1}, 0.15)
+                Utility.SafeTween(indicator, {BackgroundTransparency = 1}, 0.15)
             end
         end
     end
     
     -- Select new tab
     self._activeTab = tab
-    tab._container.Visible = true
+    if tab._container then
+        tab._container.Visible = true
+    end
+    
     if tab._tabButton then
-        Utility.Tween(tab._tabButton, {
+        Utility.SafeTween(tab._tabButton, {
             BackgroundColor3 = Theme.TabActive,
             BackgroundTransparency = 0.8
         }, 0.15)
         local label = tab._tabButton:FindFirstChild("Label")
         if label then
-            Utility.Tween(label, {TextColor3 = Theme.TextPrimary}, 0.15)
+            Utility.SafeTween(label, {TextColor3 = Theme.TextPrimary}, 0.15)
         end
         local indicator = tab._tabButton:FindFirstChild("Indicator")
         if indicator then
-            Utility.Tween(indicator, {BackgroundTransparency = 0}, 0.15)
+            indicator.BackgroundTransparency = 0
         end
     end
 end
 
 function Window:CreateTab(config)
+    if self._destroyed then return nil end
+    
     if type(config) == "string" then
         config = {Name = config}
     end
@@ -2289,12 +3033,12 @@ function Window:CreateTab(config)
     -- Hover
     tabBtn.MouseEnter:Connect(function()
         if self._activeTab ~= tab then
-            Utility.Tween(tabBtn, {BackgroundColor3 = Theme.TabHover, BackgroundTransparency = 0.3}, 0.12)
+            Utility.SafeTween(tabBtn, {BackgroundColor3 = Theme.TabHover, BackgroundTransparency = 0.3}, 0.12)
         end
     end)
     tabBtn.MouseLeave:Connect(function()
         if self._activeTab ~= tab then
-            Utility.Tween(tabBtn, {BackgroundColor3 = Theme.TabInactive, BackgroundTransparency = 0.5}, 0.12)
+            Utility.SafeTween(tabBtn, {BackgroundColor3 = Theme.TabInactive, BackgroundTransparency = 0.5}, 0.12)
         end
     end)
     
@@ -2314,7 +3058,7 @@ function Window:CreateTab(config)
 end
 
 function Window:Notify(config)
-    NotificationManager:Send(config)
+    self._notificationManager:Send(config)
 end
 
 function Window:SaveConfig()
@@ -2326,33 +3070,40 @@ function Window:LoadConfig()
 end
 
 function Window:Destroy()
+    if self._destroyed then return end
+    self._destroyed = true
+    
     -- Animate out
-    Utility.Tween(self._mainFrame, {
+    Utility.SafeTween(self._mainFrame, {
         Size = UDim2.new(0, 0, 0, 0)
     }, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In)
     
     task.wait(0.35)
     
     -- Disconnect all connections
-    for _, conn in ipairs(self._connections) do
-        if typeof(conn) == "RBXScriptConnection" then
-            conn:Disconnect()
-        end
+    self._connections:DisconnectAll()
+    
+    -- Destroy notification manager
+    if self._notificationManager then
+        self._notificationManager:Destroy()
     end
     
     -- Destroy all tabs
     for _, tab in ipairs(self._tabs) do
         tab:Destroy()
     end
+    self._tabs = {}
     
     -- Remove toggle button
     if self._toggleButton then
-        self._toggleButton:Destroy()
+        pcall(function() self._toggleButton:Destroy() end)
+        self._toggleButton = nil
     end
     
     -- Remove screen gui
     if self._screenGui then
-        self._screenGui:Destroy()
+        pcall(function() self._screenGui:Destroy() end)
+        self._screenGui = nil
     end
     
     -- Remove from library tracking
@@ -2366,30 +3117,66 @@ end
 
 -- Zgui compatibility API
 function Window:SetTitle(title)
-    self._mainFrame.TitleBar.Title.Text = title
-end
-
-function Window:SetTitleIcon(icon)
-    if self._mainFrame.TitleBar.Icon then
-        self._mainFrame.TitleBar.Icon.Image = icon
+    if self._titleTextLabel then
+        self._titleTextLabel.Text = title
     end
 end
 
-function Window:SetGame(game)
-    if self._mainFrame.TitleBar.Subtitle then
-        self._mainFrame.TitleBar.Subtitle.Text = game
+function Window:SetTitleIcon(icon)
+    if self._titleIconImage then
+        self._titleIconImage.Image = icon
+    else
+        -- Create icon if it doesn't exist
+        local titleLeft = self._titleBar and self._titleBar:FindFirstChild("TitleLeft")
+        if titleLeft then
+            self._titleIconImage = Utility.Create("ImageLabel", {
+                Name = "Icon",
+                BackgroundTransparency = 1,
+                Position = UDim2.new(0, 0, 0.5, -10),
+                Size = UDim2.new(0, 20, 0, 20),
+                Image = icon,
+                ZIndex = 7,
+                Parent = titleLeft
+            })
+        end
+    end
+end
+
+function Window:SetGame(gameName)
+    if self._subtitleTextLabel then
+        self._subtitleTextLabel.Text = gameName .. " - " .. (self._subtitle and self._subtitle:match("%-(.+)$") or "")
+    elseif self._titleTextLabel then
+        -- Append to title
+        self._titleTextLabel.Text = self._name .. " | " .. gameName
     end
 end
 
 function Window:SetVersion(version)
-    -- Not directly supported, could modify subtitle format
+    if self._subtitleTextLabel then
+        local current = self._subtitleTextLabel.Text
+        if current:find("v%d") then
+            self._subtitleTextLabel.Text = current:gsub("v[%d%.]+", "v" .. version)
+        else
+            self._subtitleTextLabel.Text = current .. " | v" .. version
+        end
+    end
 end
 
 function Window:SetLogo(logo)
-    self._toggleButton.Image = logo
+    if self._toggleButton then
+        self._toggleButton.Image = logo
+        if logo and logo ~= "" then
+            -- Remove text label
+            local label = self._toggleButton:FindFirstChild("Label")
+            if label then
+                label:Destroy()
+            end
+        end
+    end
 end
 
 function Window:Tab(name)
+    if self._destroyed then return nil end
     return self:CreateTab(name)
 end
 
@@ -2413,11 +3200,19 @@ function ZenexLib:CreateWindow(config)
         screenGui.Parent = game:GetService("CoreGui")
     end)
     if not success then
-        screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+        local playerGui = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+        if playerGui then
+            screenGui.Parent = playerGui
+        else
+            pcall(function()
+                screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+            end)
+        end
     end
     
     -- Config manager
-    local configManager = ConfigManager.new(config.ConfigName or config.Name or "ZenexConfig")
+    local configName = config.ConfigName or config.Name or "ZenexConfig"
+    local configManager = ConfigManager.new(configName)
     
     local window = Window.new(screenGui, config, configManager)
     table.insert(self._windows, window)
@@ -2446,6 +3241,10 @@ function ZenexLib:Notify(config)
     if #self._windows > 0 then
         self._windows[1]:Notify(config)
     end
+end
+
+function ZenexLib:Version()
+    return self._version
 end
 
 -- ============================================================================
